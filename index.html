@@ -235,6 +235,14 @@ async function directory() {
     };
     const n = document.createElement("div"); n.className = "cn";
     n.textContent = d.name;
+    if (d.tot || d.th) {
+      const c = document.createElement("div");
+      c.style.cssText = "font-size:12px;color:var(--mut)";
+      c.textContent = [d.tot ? d.tot.toLocaleString() + " records" : "",
+                       d.th ? d.th.toLocaleString() + " theses" : ""]
+                      .filter(Boolean).join(" · ");
+      n.appendChild(c);
+    }
     if (d.st === "archive") {
       const b = document.createElement("span");
       b.className = "badge"; b.textContent = "archive only";
