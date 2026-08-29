@@ -225,7 +225,9 @@ async function directory() {
     .catch(() => ({}));
   const docs = (r.response.docs || []).map(d => ({
     id: d.identifier,
-    name: (d.title || d.identifier).replace(/^Repository catalog of /, ""),
+    era: /2023 rescue/i.test(d.title || "") ? "2023" : "2026",
+    name: (d.title || d.identifier).replace(/^Repository catalog of /, "")
+          .replace(/\s*\(2023 rescue\)\s*/i, ""),
     kind: (man[d.identifier] || {}).k || "inst",
     st: (man[d.identifier] || {}).s || "active",
     th: (man[d.identifier] || {}).t || 0,
@@ -285,6 +287,16 @@ async function directory() {
           .filter(Boolean).join(" · ");
       n.appendChild(c);
     }
+    {
+      const e = document.createElement("span");
+      e.className = "badge";
+      e.textContent = d.era === "2023" ? "2023 rescue" : "2026 catalog";
+      e.title = d.era === "2023"
+        ? "Catalog rescued from the 2023-11-01 OAI sweep; the repository " +
+          "itself was gone or unreachable by 2026."
+        : "Catalog harvested live by this project in 2026.";
+      n.appendChild(e);
+    }
     if (d.st === "archive") {
       const b = document.createElement("span");
       b.className = "badge"; b.textContent = "archive only";
@@ -300,7 +312,9 @@ async function directory() {
                 sort: sortBy === "name" ? "" : sortBy,
                 dir: asc ? "" : "desc" });
     grid.textContent = "";
-    let f = docs.filter(d => !q || d.name.toLowerCase().includes(q));
+    let f = docs.filter(d => !q ||
+      (d.name.toLowerCase() + " " + d.era +
+       (d.era === "2023" ? " rescue" : "")).includes(q));
     if (repoMode === "with") f = f.filter(d => d.th > 0);
     if (repoMode === "focus") f = f.filter(d => d.th > 0 && d.th * 2 >= d.tot);
     f = f.slice().sort(SORTS[sortBy]);
