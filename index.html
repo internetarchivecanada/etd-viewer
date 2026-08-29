@@ -111,7 +111,11 @@ function row(r) {
     a.rel = "noopener"; a.target = "_blank"; t.appendChild(a);
   } else t.textContent = r.title || "(untitled)";
   const m = document.createElement("div"); m.className = "m";
-  m.textContent = [who, year].filter(Boolean).join(" · ");
+  const kind = (r.type || []).slice(0, 2).join(", ");
+  const lang = (r.language || []).slice(0, 2).join(", ");
+  const subj = (r.subjects || []).slice(0, 3).join(", ");
+  m.textContent = [who, year, kind, lang, subj].filter(Boolean).join(" · ");
+  m.title = r.oai_id || "";
   const links = document.createElement("div"); links.className = "links";
   const add = (href, label) => {
     const a = document.createElement("a");
