@@ -44,6 +44,8 @@
     padding:8px 14px; font-size:14px; cursor:pointer }
   .tog button[aria-pressed="true"] { background:var(--acc); color:var(--bg);
     font-weight:600 }
+  select { padding:8px 10px; font-size:14px; border:1px solid var(--line);
+    border-radius:6px; background:var(--card); color:var(--fg); flex:none }
   #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr));
     gap:14px; padding:6px 24px 60px; }
   .card { display:flex; gap:12px; align-items:center; padding:12px;
@@ -70,6 +72,12 @@
   </div>
 </header>
 <div id="controls">
+  <select id="typeSel" hidden aria-label="Filter by record type"></select>
+  <select id="repoSel" hidden aria-label="Filter repositories">
+    <option value="all">All repositories</option>
+    <option value="with">With theses</option>
+    <option value="focus">Theses-focused</option>
+  </select>
   <div class="tog" id="tog" hidden>
     <button id="tAll" aria-pressed="true">All</button>
     <button id="tThes" aria-pressed="false">Theses</button>
@@ -83,7 +91,7 @@
 <script>
 "use strict";
 const PAGE = 300;
-let all = [], view = [], shown = 0, thesesOnly = false;
+let all = [], view = [], shown = 0, thesesOnly = false, typeFilter = "";
 const THESIS = /thes[ie]s|dissert|doctoral|masterarbeit|bachelorarbeit|habilitation|proefschrift|tesis|tese\b|th[eè]se|etd\b|skripsi|disserta|magister|diplom/i;
 function isThesis(r) {
   return (r._th ??= THESIS.test(((r.type || []).join(" ") + " " +
@@ -148,6 +156,8 @@ function render(reset) {
 function applyFilter() {
   const q = $("q").value.trim().toLowerCase();
   let base = thesesOnly ? all.filter(isThesis) : all;
+  if (typeFilter) base = base.filter(r =>
+    (r.type || []).some(t => String(t).toLowerCase().trim() === typeFilter));
   view = !q ? base : base.filter(r => (r._k ||= (
     (r.title || "") + " " + (r.creators || []).join(" ") + " " + (r.date || "")
   ).toLowerCase()).includes(q));
@@ -181,8 +191,14 @@ async function directory() {
     id: d.identifier,
     name: (d.title || d.identifier).replace(/^Repository catalog of /, ""),
     kind: (man[d.identifier] || {}).k || "inst",
-    st: (man[d.identifier] || {}).s || "active"
+    st: (man[d.identifier] || {}).s || "active",
+    th: (man[d.identifier] || {}).t || 0,
+    tot: (man[d.identifier] || {}).n || 0
   })).sort((a, b) => a.name.localeCompare(b.name));
+  $("repoSel").hidden = false;
+  let repoMode = "all";
+  $("repoSel").onchange = () => { repoMode = $("repoSel").value;
+    draw($("q").value.trim().toLowerCase()); };
   const card = d => {
     const a = document.createElement("a");
     a.className = "card"; a.href = "?item=" + d.id;
@@ -209,7 +225,9 @@ async function directory() {
   };
   const draw = q => {
     grid.textContent = "";
-    const f = docs.filter(d => !q || d.name.toLowerCase().includes(q));
+    let f = docs.filter(d => !q || d.name.toLowerCase().includes(q));
+    if (repoMode === "with") f = f.filter(d => d.th > 0);
+    if (repoMode === "focus") f = f.filter(d => d.th > 0 && d.th * 2 >= d.tot);
     $("stats").textContent =
       `${f.length.toLocaleString()} of ${docs.length.toLocaleString()} repositories`;
     const sections = [
@@ -262,6 +280,7 @@ async function main() {
     $("tog").hidden = false;
     $("tAll").onclick = () => setMode(false);
     $("tThes").onclick = () => setMode(true);
+    $("typeSel").onchange = () => { typeFilter = $("typeSel").value; applyFilter(); };
     const resp = await fetch(
       `https://archive.org/download/${item}/${rec}`);
     if (!resp.ok) throw new Error("fetch " + resp.status);
@@ -286,6 +305,17 @@ async function main() {
       }
     }
     if (buf.trim()) try { all.push(JSON.parse(buf)); } catch (e) {}
+    { const c = new Map();
+      for (const r of all) for (const t of (r.type || [])) {
+        const k = String(t).toLowerCase().trim();
+        if (k) c.set(k, (c.get(k) || 0) + 1);
+      }
+      const top = [...c.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40);
+      const sel = $("typeSel");
+      sel.innerHTML = "<option value=''>All types</option>" + top.map(
+        ([k, n]) => `<option value="${k.replace(/"/g,'&quot;')}">` +
+          `${k.slice(0,40)} (${n.toLocaleString()})</option>`).join("");
+      sel.hidden = top.length === 0; }
     $("subtitle").innerHTML = `${all.length.toLocaleString()} records from ` +
       `this repository's OAI-PMH catalog · links go to the live site and ` +
       `the <a href="https://web.archive.org">Wayback Machine</a> · ` +
