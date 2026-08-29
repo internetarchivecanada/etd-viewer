@@ -375,7 +375,9 @@ async function main() {
     const files = (meta.files || []).map(f => f.name);
     const rec = files.find(f => f === "records.jsonl") ||
                 files.find(f => f.endsWith("records.jsonl.gz")) ||
-                files.find(f => /^catalog-2023-sweep-.*\.ndjson\.gz$/.test(f));
+                files.find(f => /^catalog-2023-sweep-.*\.ndjson\.gz$/.test(f)) ||
+                files.find(f => /\.(jsonl|ndjson)(\.gz)?$/.test(f) &&
+                                !/_files|_meta/.test(f));
     if (!rec) throw new Error("no records.jsonl in this item");
     $("subtitle").innerHTML = `<a href="./">← All repositories</a> · ` +
       "Streaming " + rec + " …";
@@ -428,6 +430,13 @@ async function main() {
         if (!ln) continue;
         try {
           const r = JSON.parse(ln);
+          if (r.ingest_type && r.base_url && !r.title) {  // ingest requests
+            r.title = r.base_url.replace(/^https?:\/\//, "");
+            r.urls = [r.base_url];
+            r.creators = [(r.edit_extra || {}).etd_host || ""];
+            r.type = [r.ingest_type + " ingest request"];
+            r.oai_id = r.link_source_id;
+          }
           if (r.titles && !r.title) {          // 2023 rescue schema
             r.title = (r.titles || [])[0];
             r.type = r.types; r.language = r.languages;
