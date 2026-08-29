@@ -53,7 +53,7 @@
     text-decoration:none; color:var(--fg); }
   .card:hover { border-color:var(--acc) }
   .card img, .card .ph { width:44px; height:44px; border-radius:6px;
-    object-fit:cover; flex:none; background:var(--line); }
+    object-fit:contain; flex:none; background:var(--card); }
   .card .ph { display:flex; align-items:center; justify-content:center;
     font-weight:700; color:var(--mut); font-size:20px; }
   .card .cn { font-size:14px; line-height:1.35 }
@@ -227,11 +227,16 @@ async function directory() {
     a.target = "_blank"; a.rel = "noopener";
     const img = document.createElement("img");
     img.loading = "lazy"; img.alt = "";
-    img.src = "https://archive.org/services/img/" + d.id;
+    img.src = "logos/" + d.id + ".png";
+    let tried = 0;
     img.onerror = () => {
-      const ph = document.createElement("div"); ph.className = "ph";
-      ph.textContent = (d.name[0] || "?").toUpperCase();
-      img.replaceWith(ph);
+      if (tried++ === 0) {
+        img.src = "https://archive.org/services/img/" + d.id;
+      } else {
+        const ph = document.createElement("div"); ph.className = "ph";
+        ph.textContent = (d.name[0] || "?").toUpperCase();
+        img.replaceWith(ph);
+      }
     };
     const n = document.createElement("div"); n.className = "cn";
     n.textContent = d.name;
