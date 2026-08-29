@@ -73,6 +73,16 @@
 </header>
 <div id="controls">
   <select id="typeSel" hidden aria-label="Filter by record type"></select>
+  <select id="sortSel" hidden aria-label="Sort repositories">
+    <option value="name">Sort: name</option>
+    <option value="records">Sort: records</option>
+    <option value="theses">Sort: theses</option>
+    <option value="date">Sort: recently catalogued</option>
+  </select>
+  <button id="sortDir" hidden aria-label="Sort direction"
+    style="border:1px solid var(--line); background:var(--card);
+    color:var(--fg); border-radius:6px; padding:8px 12px; cursor:pointer;
+    font-size:14px; flex:none">↑</button>
   <select id="repoSel" hidden aria-label="Filter repositories">
     <option value="all">All repositories</option>
     <option value="with">With theses</option>
@@ -185,7 +195,7 @@ async function directory() {
   const [r, man] = await Promise.all([
     (await fetch(
       "https://archive.org/advancedsearch.php?q=collection%3Aetd-catalogs" +
-      "&fl%5B%5D=identifier&fl%5B%5D=title&rows=10000&output=json")).json(),
+      "&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=publicdate&rows=10000&output=json")).json(),
     fetch("manifest.json").then(x => x.json()).catch(() => ({}))]);
   const docs = (r.response.docs || []).map(d => ({
     id: d.identifier,
@@ -193,12 +203,24 @@ async function directory() {
     kind: (man[d.identifier] || {}).k || "inst",
     st: (man[d.identifier] || {}).s || "active",
     th: (man[d.identifier] || {}).t || 0,
-    tot: (man[d.identifier] || {}).n || 0
-  })).sort((a, b) => a.name.localeCompare(b.name));
-  $("repoSel").hidden = false;
-  let repoMode = "all";
-  $("repoSel").onchange = () => { repoMode = $("repoSel").value;
-    draw($("q").value.trim().toLowerCase()); };
+    tot: (man[d.identifier] || {}).n || 0,
+    pd: d.publicdate || ""
+  }));
+  $("repoSel").hidden = $("sortSel").hidden = $("sortDir").hidden = false;
+  let repoMode = "all", sortBy = "name", asc = true;
+  const redraw = () => draw($("q").value.trim().toLowerCase());
+  $("repoSel").onchange = () => { repoMode = $("repoSel").value; redraw(); };
+  $("sortSel").onchange = () => { sortBy = $("sortSel").value;
+    asc = sortBy === "name";           // sensible defaults per key
+    $("sortDir").textContent = asc ? "↑" : "↓"; redraw(); };
+  $("sortDir").onclick = () => { asc = !asc;
+    $("sortDir").textContent = asc ? "↑" : "↓"; redraw(); };
+  const SORTS = {
+    name: (a, b) => a.name.localeCompare(b.name),
+    records: (a, b) => a.tot - b.tot,
+    theses: (a, b) => a.th - b.th,
+    date: (a, b) => a.pd.localeCompare(b.pd)
+  };
   const card = d => {
     const a = document.createElement("a");
     a.className = "card"; a.href = "?item=" + d.id;
@@ -228,6 +250,8 @@ async function directory() {
     let f = docs.filter(d => !q || d.name.toLowerCase().includes(q));
     if (repoMode === "with") f = f.filter(d => d.th > 0);
     if (repoMode === "focus") f = f.filter(d => d.th > 0 && d.th * 2 >= d.tot);
+    f = f.slice().sort(SORTS[sortBy]);
+    if (!asc) f.reverse();
     $("stats").textContent =
       `${f.length.toLocaleString()} of ${docs.length.toLocaleString()} repositories`;
     const sections = [
@@ -250,9 +274,11 @@ async function directory() {
       inner.style.gridTemplateColumns = "repeat(auto-fill,minmax(240px,1fr))";
       inner.style.gap = "14px"; inner.style.padding = "6px 24px 8px";
       const frag = document.createDocumentFragment();
-      const act = list.filter(d => d.st !== "archive");
-      const arch = list.filter(d => d.st === "archive");
-      for (const d of act.concat(arch)) frag.appendChild(card(d));
+      const ordered = sortBy === "name" && asc
+        ? list.filter(d => d.st !== "archive")
+              .concat(list.filter(d => d.st === "archive"))
+        : list;
+      for (const d of ordered) frag.appendChild(card(d));
       inner.appendChild(frag);
       grid.append(h, ps, inner);
     }
