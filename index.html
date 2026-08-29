@@ -329,7 +329,8 @@ async function main() {
     const rec = files.find(f => f === "records.jsonl") ||
                 files.find(f => f.endsWith("records.jsonl.gz"));
     if (!rec) throw new Error("no records.jsonl in this item");
-    $("subtitle").textContent = "Streaming " + rec + " …";
+    $("subtitle").innerHTML = `<a href="./">← All repositories</a> · ` +
+      "Streaming " + rec + " …";
     $("tog").hidden = false;
     $("tAll").onclick = () => setMode(false);
     $("tThes").onclick = () => setMode(true);
@@ -369,10 +370,13 @@ async function main() {
         ([k, n]) => `<option value="${k.replace(/"/g,'&quot;')}">` +
           `${k.slice(0,40)} (${n.toLocaleString()})</option>`).join("");
       sel.hidden = top.length === 0; }
-    $("subtitle").innerHTML = `${all.length.toLocaleString()} records from ` +
-      `this repository's OAI-PMH catalog · links go to the live site and ` +
-      `the <a href="https://web.archive.org">Wayback Machine</a> · ` +
-      `Internet Archive Europe ETD project`;
+    $("subtitle").innerHTML = `<a href="./">← All repositories</a> · ` +
+      `${all.length.toLocaleString()} records from this repository's ` +
+      `OAI-PMH catalog · links go to the live site and the ` +
+      `<a href="https://web.archive.org" target="_blank" rel="noopener">` +
+      `Wayback Machine</a> · <a href="./">Internet Archive Europe ETD ` +
+      `project</a> (<a href="https://archive.org/details/etd-catalogs" ` +
+      `target="_blank" rel="noopener">collection</a>)`;
     applyFilter();
   } catch (e) {
     const d = document.createElement("div");
