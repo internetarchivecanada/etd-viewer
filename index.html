@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ETD catalog viewer</title>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#f7f6f2; --fg:#1e1d1a; --mut:#6b675e; --line:#dedbd2;
+    --acc:#845418; --card:#fffefb; }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#191817; --fg:#e8e5df; --mut:#98938a; --line:#33312d;
+    --acc:#d9a05b; --card:#201f1d; } }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.5 system-ui, sans-serif; }
+  header { padding:20px 24px 12px; border-bottom:1px solid var(--line); }
+  h1 { margin:0 0 2px; font-size:20px; }
+  h1 a { color:inherit; text-decoration:none }
+  .sub { color:var(--mut); font-size:13px; }
+  .sub a { color:var(--acc) }
+  #controls { display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+    padding:12px 24px; }
+  #q { flex:1; min-width:220px; padding:8px 12px; font-size:15px;
+    border:1px solid var(--line); border-radius:6px;
+    background:var(--card); color:var(--fg); }
+  #stats { color:var(--mut); font-size:13px; white-space:nowrap; }
+  #rows { padding:0 24px 60px; }
+  .rec { padding:10px 0; border-bottom:1px solid var(--line); }
+  .t { font-weight:600 }
+  .t a { color:var(--fg); text-decoration:none }
+  .t a:hover { color:var(--acc) }
+  .m { color:var(--mut); font-size:13px; }
+  .links { font-size:13px; margin-top:2px }
+  .links a { color:var(--acc); text-decoration:none; margin-right:14px }
+  .links a:hover { text-decoration:underline }
+  #more { margin:20px 24px; padding:10px 18px; font-size:15px;
+    border:1px solid var(--line); border-radius:6px;
+    background:var(--card); color:var(--fg); cursor:pointer; }
+  .err { color:#b3403a; padding:20px 24px; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">ETD catalog viewer</h1>
+  <div class="sub" id="subtitle">
+    Loading… Pass <code>?item=&lt;identifier&gt;</code> of any
+    <a href="https://archive.org/details/etd-catalogs">etd-catalogs</a> item.
+  </div>
+</header>
+<div id="controls">
+  <input id="q" type="search" placeholder="Filter by title, author, year…"
+         aria-label="Filter records">
+  <span id="stats"></span>
+</div>
+<div id="rows" role="list"></div>
+<button id="more" hidden>Show more</button>
+<script>
+"use strict";
+const PAGE = 300;
+let all = [], view = [], shown = 0;
+const $ = id => document.getElementById(id);
+
+function best(urls) {
+  const http = (urls || []).filter(u => typeof u === "string" && u.startsWith("http"));
+  const doc = http.find(u => /\.pdf([?#]|$)|bitstream|\/download|viewcontent/i.test(u));
+  return { page: http.find(u => !/\.pdf([?#]|$)/i.test(u)) || http[0], doc, all: http };
+}
+
+function row(r) {
+  const u = best(r.urls);
+  const d = document.createElement("div");
+  d.className = "rec"; d.setAttribute("role", "listitem");
+  const year = (r.date || "").slice(0, 4);
+  const who = (r.creators || []).join("; ");
+  const live = u.page || u.doc;
+  const t = document.createElement("div"); t.className = "t";
+  if (live) {
+    const a = document.createElement("a");
+    a.href = live; a.textContent = r.title || "(untitled)";
+    a.rel = "noopener"; t.appendChild(a);
+  } else t.textContent = r.title || "(untitled)";
+  const m = document.createElement("div"); m.className = "m";
+  m.textContent = [who, year].filter(Boolean).join(" · ");
+  const links = document.createElement("div"); links.className = "links";
+  const add = (href, label) => {
+    const a = document.createElement("a");
+    a.href = href; a.textContent = label; a.rel = "noopener";
+    links.appendChild(a);
+  };
+  if (live) { add(live, "live ↗"); add("https://web.archive.org/web/2/" + live, "wayback"); }
+  if (u.doc && u.doc !== live) {
+    add(u.doc, "document ↗");
+    add("https://web.archive.org/web/2/" + u.doc, "wayback (document)");
+  }
+  d.append(t, m, links);
+  return d;
+}
+
+function render(reset) {
+  if (reset) { $("rows").textContent = ""; shown = 0; }
+  const frag = document.createDocumentFragment();
+  const upto = Math.min(view.length, shown + PAGE);
+  for (; shown < upto; shown++) frag.appendChild(row(view[shown]));
+  $("rows").appendChild(frag);
+  $("more").hidden = shown >= view.length;
+  $("stats").textContent =
+    `${view.length.toLocaleString()} of ${all.length.toLocaleString()} records`;
+}
+
+function applyFilter() {
+  const q = $("q").value.trim().toLowerCase();
+  view = !q ? all : all.filter(r => (r._k ||= (
+    (r.title || "") + " " + (r.creators || []).join(" ") + " " + (r.date || "")
+  ).toLowerCase()).includes(q));
+  render(true);
+}
+
+async function main() {
+  const item = new URLSearchParams(location.search).get("item");
+  if (!item) { $("subtitle").innerHTML = "No <code>?item=</code> given. " +
+    $("subtitle").innerHTML; return; }
+  try {
+    const meta = await (await fetch(
+      `https://archive.org/metadata/${encodeURIComponent(item)}`)).json();
+    const name = (meta.metadata && meta.metadata.title) || item;
+    $("title").innerHTML =
+      `<a href="https://archive.org/details/${item}">${name}</a>`;
+    document.title = name;
+    const files = (meta.files || []).map(f => f.name);
+    const rec = files.find(f => f === "records.jsonl") ||
+                files.find(f => f.endsWith("records.jsonl.gz"));
+    if (!rec) throw new Error("no records.jsonl in this item");
+    $("subtitle").textContent = "Streaming " + rec + " …";
+    const resp = await fetch(
+      `https://archive.org/download/${item}/${rec}`);
+    if (!resp.ok) throw new Error("fetch " + resp.status);
+    let stream = resp.body;
+    if (rec.endsWith(".gz"))
+      stream = stream.pipeThrough(new DecompressionStream("gzip"));
+    const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "", n = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += value;
+      const lines = buf.split("\n"); buf = lines.pop();
+      for (const ln of lines) {
+        if (!ln) continue;
+        try { all.push(JSON.parse(ln)); } catch (e) {}
+      }
+      n = all.length;
+      if (n % 5000 < 50) {
+        $("subtitle").textContent = `Loaded ${n.toLocaleString()} records…`;
+        if (view.length === 0 && all.length >= PAGE) { view = all; render(true); }
+      }
+    }
+    if (buf.trim()) try { all.push(JSON.parse(buf)); } catch (e) {}
+    $("subtitle").innerHTML = `${all.length.toLocaleString()} records from ` +
+      `this repository's OAI-PMH catalog · links go to the live site and ` +
+      `the <a href="https://web.archive.org">Wayback Machine</a> · ` +
+      `Internet Archive Europe ETD project`;
+    applyFilter();
+  } catch (e) {
+    const d = document.createElement("div");
+    d.className = "err";
+    d.textContent = "Could not load this catalog: " + e.message;
+    $("rows").replaceWith(d);
+  }
+}
+$("q").addEventListener("input", () => { clearTimeout(window._t);
+  window._t = setTimeout(applyFilter, 200); });
+$("more").addEventListener("click", () => render(false));
+main();
+</script>
+</body>
+</html>
