@@ -38,6 +38,12 @@
     border:1px solid var(--line); border-radius:6px;
     background:var(--card); color:var(--fg); cursor:pointer; }
   .err { color:#b3403a; padding:20px 24px; }
+  .tog { display:flex; border:1px solid var(--line); border-radius:6px;
+    overflow:hidden; flex:none }
+  .tog button { border:0; background:var(--card); color:var(--mut);
+    padding:8px 14px; font-size:14px; cursor:pointer }
+  .tog button[aria-pressed="true"] { background:var(--acc); color:var(--bg);
+    font-weight:600 }
   #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr));
     gap:14px; padding:6px 24px 60px; }
   .card { display:flex; gap:12px; align-items:center; padding:12px;
@@ -64,6 +70,10 @@
   </div>
 </header>
 <div id="controls">
+  <div class="tog" id="tog" hidden>
+    <button id="tAll" aria-pressed="true">All</button>
+    <button id="tThes" aria-pressed="false">Theses</button>
+  </div>
   <input id="q" type="search" placeholder="Filter by title, author, year…"
          aria-label="Filter records">
   <span id="stats"></span>
@@ -73,7 +83,12 @@
 <script>
 "use strict";
 const PAGE = 300;
-let all = [], view = [], shown = 0;
+let all = [], view = [], shown = 0, thesesOnly = false;
+const THESIS = /thes[ie]s|dissert|doctoral|masterarbeit|bachelorarbeit|habilitation|proefschrift|tesis|tese\b|th[eè]se|etd\b|skripsi|disserta|magister|diplom/i;
+function isThesis(r) {
+  return (r._th ??= THESIS.test(((r.type || []).join(" ") + " " +
+    (r.sets || []).join(" "))));
+}
 const $ = id => document.getElementById(id);
 
 function best(urls) {
@@ -120,22 +135,31 @@ function render(reset) {
   for (; shown < upto; shown++) frag.appendChild(row(view[shown]));
   $("rows").appendChild(frag);
   $("more").hidden = shown >= view.length;
+  const nth = all.filter(isThesis).length;
   $("stats").textContent =
-    `${view.length.toLocaleString()} of ${all.length.toLocaleString()} records`;
+    `${view.length.toLocaleString()} of ${all.length.toLocaleString()} records` +
+    (all.length ? ` · ${nth.toLocaleString()} theses` : "");
 }
 
 function applyFilter() {
   const q = $("q").value.trim().toLowerCase();
-  view = !q ? all : all.filter(r => (r._k ||= (
+  let base = thesesOnly ? all.filter(isThesis) : all;
+  view = !q ? base : base.filter(r => (r._k ||= (
     (r.title || "") + " " + (r.creators || []).join(" ") + " " + (r.date || "")
   ).toLowerCase()).includes(q));
   render(true);
 }
+function setMode(t) {
+  thesesOnly = t;
+  $("tAll").setAttribute("aria-pressed", String(!t));
+  $("tThes").setAttribute("aria-pressed", String(t));
+  applyFilter();
+}
 
 async function directory() {
-  document.title = "Theses of the world -- repository catalogs";
-  $("title").textContent = "Theses of the world";
-  $("subtitle").innerHTML = "Every university repository catalogued by the " +
+  document.title = "Institutional Repositories of the World, including Theses";
+  $("title").textContent = "Institutional Repositories of the World, including Theses";
+  $("subtitle").innerHTML = "Complete repository catalogs -- theses, papers, and more -- gathered by the " +
     "<a href='https://archive.org/details/etd-catalogs'>Internet Archive " +
     "Europe ETD project</a> -- click one to browse its theses with live " +
     "and Wayback Machine links.";
@@ -231,6 +255,9 @@ async function main() {
                 files.find(f => f.endsWith("records.jsonl.gz"));
     if (!rec) throw new Error("no records.jsonl in this item");
     $("subtitle").textContent = "Streaming " + rec + " …";
+    $("tog").hidden = false;
+    $("tAll").onclick = () => setMode(false);
+    $("tThes").onclick = () => setMode(true);
     const resp = await fetch(
       `https://archive.org/download/${item}/${rec}`);
     if (!resp.ok) throw new Error("fetch " + resp.status);
