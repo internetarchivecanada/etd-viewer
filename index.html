@@ -345,9 +345,25 @@ async function main() {
       resp = await fetch(`https://archive.org/download/${item}/${rec}`);
       if (!resp.ok) throw new Error("fetch " + resp.status);
     }
+    // Some endpoints serve .gz with Content-Encoding: gzip (browser
+    // already decompressed); others serve raw bytes. Sniff the magic
+    // bytes instead of trusting names or unreadable cross-origin headers.
     let stream = resp.body;
-    if (rec.endsWith(".gz"))
-      stream = stream.pipeThrough(new DecompressionStream("gzip"));
+    {
+      const rd = stream.getReader();
+      const first = await rd.read();
+      const head = first.value || new Uint8Array(0);
+      const rest = new ReadableStream({
+        start(c) { if (head.length) c.enqueue(head); },
+        async pull(c) {
+          const { done, value } = await rd.read();
+          if (done) c.close(); else c.enqueue(value);
+        }
+      });
+      stream = (head[0] === 0x1f && head[1] === 0x8b)
+        ? rest.pipeThrough(new DecompressionStream("gzip"))
+        : rest;
+    }
     const reader = stream.pipeThrough(new TextDecoderStream()).getReader();
     let buf = "", n = 0;
     for (;;) {
