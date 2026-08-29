@@ -94,6 +94,10 @@
   </div>
   <input id="q" type="search" placeholder="Filter by title, author, year…"
          aria-label="Filter records">
+  <button id="share" title="Copy a link to this view"
+    style="border:1px solid var(--line); background:var(--card);
+    color:var(--fg); border-radius:6px; padding:8px 12px; cursor:pointer;
+    font-size:14px; flex:none">🔗</button>
   <span id="stats"></span>
 </div>
 <div id="rows" role="list"></div>
@@ -101,6 +105,23 @@
 <script>
 "use strict";
 const PAGE = 300;
+function setParams(obj) {
+  const u = new URL(location.href);
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === "" || v == null || v === false) u.searchParams.delete(k);
+    else u.searchParams.set(k, v === true ? "1" : v);
+  }
+  history.replaceState({}, "", u);
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const b = document.getElementById("share");
+  if (b) b.onclick = async () => {
+    try { await navigator.clipboard.writeText(location.href);
+          b.textContent = "✓ copied"; }
+    catch (e) { prompt("Copy this link:", location.href); }
+    setTimeout(() => b.textContent = "🔗", 1500);
+  };
+});
 let all = [], view = [], shown = 0, thesesOnly = false, typeFilter = "";
 const THESIS = /thes[ie]s|dissert|doctoral|masterarbeit|bachelorarbeit|habilitation|proefschrift|tesis|tese\b|th[eè]se|etd\b|skripsi|disserta|magister|diplom/i;
 function isThesis(r) {
@@ -165,6 +186,8 @@ function render(reset) {
 
 function applyFilter() {
   const q = $("q").value.trim().toLowerCase();
+  setParams({ q: $("q").value.trim(), theses: thesesOnly,
+              type: typeFilter });
   let base = thesesOnly ? all.filter(isThesis) : all;
   if (typeFilter) base = base.filter(r =>
     (r.type || []).some(t => String(t).toLowerCase().trim() === typeFilter));
@@ -210,7 +233,14 @@ async function directory() {
     pd: d.publicdate || ""
   }));
   $("repoSel").hidden = $("sortSel").hidden = $("sortDir").hidden = false;
-  let repoMode = "all", sortBy = "name", asc = true;
+  const P0 = new URLSearchParams(location.search);
+  let repoMode = P0.get("show") || "all",
+      sortBy = P0.get("sort") || "name",
+      asc = P0.get("dir") !== "desc" && (P0.get("sort") || "name") === "name"
+            ? P0.get("dir") !== "desc" : P0.get("dir") === "asc";
+  if (P0.get("q")) $("q").value = P0.get("q");
+  $("repoSel").value = repoMode; $("sortSel").value = sortBy;
+  $("sortDir").textContent = asc ? "↑" : "↓";
   const redraw = () => draw($("q").value.trim().toLowerCase());
   $("repoSel").onchange = () => { repoMode = $("repoSel").value; redraw(); };
   $("sortSel").onchange = () => { sortBy = $("sortSel").value;
@@ -266,6 +296,9 @@ async function directory() {
     return a;
   };
   const draw = q => {
+    setParams({ q: $("q").value.trim(), show: repoMode === "all" ? "" : repoMode,
+                sort: sortBy === "name" ? "" : sortBy,
+                dir: asc ? "" : "desc" });
     grid.textContent = "";
     let f = docs.filter(d => !q || d.name.toLowerCase().includes(q));
     if (repoMode === "with") f = f.filter(d => d.th > 0);
@@ -336,6 +369,12 @@ async function main() {
     $("tAll").onclick = () => setMode(false);
     $("tThes").onclick = () => setMode(true);
     $("typeSel").onchange = () => { typeFilter = $("typeSel").value; applyFilter(); };
+    const P = new URLSearchParams(location.search);
+    if (P.get("q")) $("q").value = P.get("q");
+    if (P.get("theses") === "1") thesesOnly = true;
+    if (P.get("type")) typeFilter = P.get("type");
+    $("tAll").setAttribute("aria-pressed", String(!thesesOnly));
+    $("tThes").setAttribute("aria-pressed", String(thesesOnly));
     let resp;
     try {                       // /cors/ guarantees the header; some
       resp = await fetch(       // datanodes omit it on /download/
@@ -401,7 +440,8 @@ async function main() {
       sel.innerHTML = "<option value=''>All types</option>" + top.map(
         ([k, n]) => `<option value="${k.replace(/"/g,'&quot;')}">` +
           `${k.slice(0,40)} (${n.toLocaleString()})</option>`).join("");
-      sel.hidden = top.length === 0; }
+      sel.hidden = top.length === 0;
+      if (typeFilter) sel.value = typeFilter; }
     $("subtitle").innerHTML = `<a href="./">← All repositories</a> · ` +
       `${all.length.toLocaleString()} records from this repository's ` +
       `OAI-PMH catalog · links go to the live site and the ` +
