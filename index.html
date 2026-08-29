@@ -292,13 +292,10 @@ async function directory() {
     {
       const e = document.createElement("span");
       e.className = "badge";
-      e.textContent = d.era !== "2023" ? "2026 catalog"
-        : rstat[d.id] === "alive" ? "2023 snapshot · site lives"
-        : "2023 rescue · site gone";
+      e.textContent = d.era === "2023" ? "2023 snapshot" : "2026 snapshot";
       e.title = d.era === "2023"
-        ? "Catalog rescued from the 2023-11-01 OAI sweep; the repository " +
-          "itself was gone or unreachable by 2026."
-        : "Catalog harvested live by this project in 2026.";
+        ? "Catalog snapshot from the 2023-11-01 OAI sweep."
+        : "Catalog snapshot harvested by this project in 2026.";
       n.appendChild(e);
     }
     if (d.st === "archive") {
