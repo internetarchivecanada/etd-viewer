@@ -49,6 +49,10 @@
   .card .ph { display:flex; align-items:center; justify-content:center;
     font-weight:700; color:var(--mut); font-size:20px; }
   .card .cn { font-size:14px; line-height:1.35 }
+  .badge { font-size:11px; color:var(--mut); border:1px solid var(--line);
+    border-radius:10px; padding:1px 8px; margin-left:6px; white-space:nowrap }
+  h2.sec { margin:26px 24px 4px; font-size:16px; }
+  p.secsub { margin:0 24px 10px; color:var(--mut); font-size:13px }
 </style>
 </head>
 <body>
@@ -135,38 +139,75 @@ async function directory() {
     "Europe ETD project</a> -- click one to browse its theses with live " +
     "and Wayback Machine links.";
   $("q").placeholder = "Filter repositories\u2026";
-  const grid = document.createElement("div"); grid.id = "grid";
+  const grid = document.createElement("div");
+  grid.style.paddingBottom = "60px";
   $("rows").replaceWith(grid);
   $("more").remove();
-  const r = await (await fetch(
-    "https://archive.org/advancedsearch.php?q=collection%3Aetd-catalogs" +
-    "&fl%5B%5D=identifier&fl%5B%5D=title&rows=10000&output=json")).json();
+  const [r, man] = await Promise.all([
+    (await fetch(
+      "https://archive.org/advancedsearch.php?q=collection%3Aetd-catalogs" +
+      "&fl%5B%5D=identifier&fl%5B%5D=title&rows=10000&output=json")).json(),
+    fetch("manifest.json").then(x => x.json()).catch(() => ({}))]);
   const docs = (r.response.docs || []).map(d => ({
     id: d.identifier,
-    name: (d.title || d.identifier).replace(/^Repository catalog of /, "")
+    name: (d.title || d.identifier).replace(/^Repository catalog of /, ""),
+    kind: (man[d.identifier] || {}).k || "inst",
+    st: (man[d.identifier] || {}).s || "active"
   })).sort((a, b) => a.name.localeCompare(b.name));
+  const card = d => {
+    const a = document.createElement("a");
+    a.className = "card"; a.href = "?item=" + d.id;
+    const img = document.createElement("img");
+    img.loading = "lazy"; img.alt = "";
+    img.src = "https://archive.org/services/img/" + d.id;
+    img.onerror = () => {
+      const ph = document.createElement("div"); ph.className = "ph";
+      ph.textContent = (d.name[0] || "?").toUpperCase();
+      img.replaceWith(ph);
+    };
+    const n = document.createElement("div"); n.className = "cn";
+    n.textContent = d.name;
+    if (d.st === "archive") {
+      const b = document.createElement("span");
+      b.className = "badge"; b.textContent = "archive only";
+      b.title = "The original site no longer answers; this catalog and the " +
+        "Wayback Machine are what survives.";
+      n.appendChild(b);
+    }
+    a.append(img, n);
+    return a;
+  };
   const draw = q => {
     grid.textContent = "";
     const f = docs.filter(d => !q || d.name.toLowerCase().includes(q));
     $("stats").textContent =
       `${f.length.toLocaleString()} of ${docs.length.toLocaleString()} repositories`;
-    const frag = document.createDocumentFragment();
-    for (const d of f) {
-      const a = document.createElement("a");
-      a.className = "card"; a.href = "?item=" + d.id;
-      const img = document.createElement("img");
-      img.loading = "lazy"; img.alt = "";
-      img.src = "https://archive.org/services/img/" + d.id;
-      img.onerror = () => {
-        const ph = document.createElement("div"); ph.className = "ph";
-        ph.textContent = (d.name[0] || "?").toUpperCase();
-        img.replaceWith(ph);
-      };
-      const n = document.createElement("div"); n.className = "cn";
-      n.textContent = d.name;
-      a.append(img, n); frag.appendChild(a);
+    const sections = [
+      ["Institutional repositories", "Universities and research institutions.",
+       f.filter(d => d.kind === "inst")],
+      ["Aggregators & national portals",
+       "Union catalogs, national libraries, and resolver services.",
+       f.filter(d => d.kind === "agg")]];
+    for (const [title, sub, list] of sections) {
+      if (!list.length) continue;
+      const h = document.createElement("h2"); h.className = "sec";
+      h.textContent = `${title} (${list.length.toLocaleString()})`;
+      const ps = document.createElement("p"); ps.className = "secsub";
+      ps.textContent = sub;
+      const g = document.createElement("div"); g.id = "";
+      g.style.cssText = getComputedStyle(grid).display ? "" : "";
+      g.className = ""; g.setAttribute("style", "");
+      const inner = document.createElement("div");
+      inner.style.display = "grid";
+      inner.style.gridTemplateColumns = "repeat(auto-fill,minmax(240px,1fr))";
+      inner.style.gap = "14px"; inner.style.padding = "6px 24px 8px";
+      const frag = document.createDocumentFragment();
+      const act = list.filter(d => d.st !== "archive");
+      const arch = list.filter(d => d.st === "archive");
+      for (const d of act.concat(arch)) frag.appendChild(card(d));
+      inner.appendChild(frag);
+      grid.append(h, ps, inner);
     }
-    grid.appendChild(frag);
   };
   draw("");
   $("q").addEventListener("input", () => { clearTimeout(window._t);
