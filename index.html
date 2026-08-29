@@ -336,9 +336,15 @@ async function main() {
     $("tAll").onclick = () => setMode(false);
     $("tThes").onclick = () => setMode(true);
     $("typeSel").onchange = () => { typeFilter = $("typeSel").value; applyFilter(); };
-    const resp = await fetch(
-      `https://archive.org/download/${item}/${rec}`);
-    if (!resp.ok) throw new Error("fetch " + resp.status);
+    let resp;
+    try {                       // /cors/ guarantees the header; some
+      resp = await fetch(       // datanodes omit it on /download/
+        `https://archive.org/cors/${item}/${rec}`);
+      if (!resp.ok) throw new Error("cors " + resp.status);
+    } catch (e) {
+      resp = await fetch(`https://archive.org/download/${item}/${rec}`);
+      if (!resp.ok) throw new Error("fetch " + resp.status);
+    }
     let stream = resp.body;
     if (rec.endsWith(".gz"))
       stream = stream.pipeThrough(new DecompressionStream("gzip"));
