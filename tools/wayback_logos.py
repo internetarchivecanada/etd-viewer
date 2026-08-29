@@ -39,9 +39,15 @@ def one(host):
     ident = "etd-catalog-" + re.sub(r"[^a-z0-9]+", "-", host.lower()).strip("-")
     out = LOGOS / (ident + ".png")
     if out.exists(): return "have"
-    try:
-        html = get(f"https://web.archive.org/web/2id_/http://{host}/").decode(errors="replace")
-    except Exception:
+    html = None
+    for v in (f"http://{host}/", f"https://{host}/",
+              f"http://www.{host}/", f"https://www.{host}/"):
+        try:
+            html = get(f"https://web.archive.org/web/2id_/{v}").decode(errors="replace")
+            break
+        except Exception:
+            continue
+    if html is None:
         return "no-capture"
     for cu in candidates(html, host):
         try:

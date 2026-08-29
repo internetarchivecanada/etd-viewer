@@ -227,9 +227,9 @@ async function directory() {
     .catch(() => ({}));
   const docs = (r.response.docs || []).map(d => ({
     id: d.identifier,
-    era: /2023 rescue/i.test(d.title || "") ? "2023" : "2026",
+    era: /2023 (rescue|snapshot)/i.test(d.title || "") ? "2023" : "2026",
     name: (d.title || d.identifier).replace(/^Repository catalog of /, "")
-          .replace(/\s*\(2023 rescue\)\s*/i, ""),
+          .replace(/\s*\(2023 (rescue|snapshot)\)\s*/i, ""),
     kind: (man[d.identifier] || {}).k || "inst",
     st: (man[d.identifier] || {}).s || "active",
     th: (man[d.identifier] || {}).t || 0,
