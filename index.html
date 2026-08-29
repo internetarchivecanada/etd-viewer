@@ -38,6 +38,17 @@
     border:1px solid var(--line); border-radius:6px;
     background:var(--card); color:var(--fg); cursor:pointer; }
   .err { color:#b3403a; padding:20px 24px; }
+  #grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr));
+    gap:14px; padding:6px 24px 60px; }
+  .card { display:flex; gap:12px; align-items:center; padding:12px;
+    background:var(--card); border:1px solid var(--line); border-radius:8px;
+    text-decoration:none; color:var(--fg); }
+  .card:hover { border-color:var(--acc) }
+  .card img, .card .ph { width:44px; height:44px; border-radius:6px;
+    object-fit:cover; flex:none; background:var(--line); }
+  .card .ph { display:flex; align-items:center; justify-content:center;
+    font-weight:700; color:var(--mut); font-size:20px; }
+  .card .cn { font-size:14px; line-height:1.35 }
 </style>
 </head>
 <body>
@@ -116,10 +127,55 @@ function applyFilter() {
   render(true);
 }
 
+async function directory() {
+  document.title = "Theses of the world -- repository catalogs";
+  $("title").textContent = "Theses of the world";
+  $("subtitle").innerHTML = "Every university repository catalogued by the " +
+    "<a href='https://archive.org/details/etd-catalogs'>Internet Archive " +
+    "Europe ETD project</a> -- click one to browse its theses with live " +
+    "and Wayback Machine links.";
+  $("q").placeholder = "Filter repositories\u2026";
+  const grid = document.createElement("div"); grid.id = "grid";
+  $("rows").replaceWith(grid);
+  $("more").remove();
+  const r = await (await fetch(
+    "https://archive.org/advancedsearch.php?q=collection%3Aetd-catalogs" +
+    "&fl%5B%5D=identifier&fl%5B%5D=title&rows=10000&output=json")).json();
+  const docs = (r.response.docs || []).map(d => ({
+    id: d.identifier,
+    name: (d.title || d.identifier).replace(/^Repository catalog of /, "")
+  })).sort((a, b) => a.name.localeCompare(b.name));
+  const draw = q => {
+    grid.textContent = "";
+    const f = docs.filter(d => !q || d.name.toLowerCase().includes(q));
+    $("stats").textContent =
+      `${f.length.toLocaleString()} of ${docs.length.toLocaleString()} repositories`;
+    const frag = document.createDocumentFragment();
+    for (const d of f) {
+      const a = document.createElement("a");
+      a.className = "card"; a.href = "?item=" + d.id;
+      const img = document.createElement("img");
+      img.loading = "lazy"; img.alt = "";
+      img.src = "https://archive.org/services/img/" + d.id;
+      img.onerror = () => {
+        const ph = document.createElement("div"); ph.className = "ph";
+        ph.textContent = (d.name[0] || "?").toUpperCase();
+        img.replaceWith(ph);
+      };
+      const n = document.createElement("div"); n.className = "cn";
+      n.textContent = d.name;
+      a.append(img, n); frag.appendChild(a);
+    }
+    grid.appendChild(frag);
+  };
+  draw("");
+  $("q").addEventListener("input", () => { clearTimeout(window._t);
+    window._t = setTimeout(() => draw($("q").value.trim().toLowerCase()), 200); });
+}
+
 async function main() {
   const item = new URLSearchParams(location.search).get("item");
-  if (!item) { $("subtitle").innerHTML = "No <code>?item=</code> given. " +
-    $("subtitle").innerHTML; return; }
+  if (!item) { directory(); return; }
   try {
     const meta = await (await fetch(
       `https://archive.org/metadata/${encodeURIComponent(item)}`)).json();
