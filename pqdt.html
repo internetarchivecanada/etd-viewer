@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProQuest ETD institutions × Internet Archive holdings</title>
+<style>
+  :root { color-scheme: light dark;
+    --bg:#f7f6f2; --fg:#1e1d1a; --mut:#6b675e; --line:#dedbd2;
+    --acc:#845418; --card:#fffefb; }
+  @media (prefers-color-scheme: dark) { :root {
+    --bg:#191817; --fg:#e8e5df; --mut:#98938a; --line:#33312d;
+    --acc:#d9a05b; --card:#201f1d; } }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:15px/1.5 system-ui,sans-serif; }
+  header { padding:20px 24px 10px; border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:20px }
+  .sub { color:var(--mut); font-size:13px; margin-top:2px }
+  .sub a { color:var(--acc) }
+  #controls { display:flex; gap:10px; padding:12px 24px; flex-wrap:wrap }
+  #q { flex:1; min-width:200px; padding:8px 12px; font-size:15px;
+    border:1px solid var(--line); border-radius:6px;
+    background:var(--card); color:var(--fg); }
+  select { padding:8px 10px; font-size:14px; border:1px solid var(--line);
+    border-radius:6px; background:var(--card); color:var(--fg); }
+  #stats { color:var(--mut); font-size:13px; align-self:center }
+  table { border-collapse:collapse; width:100%; }
+  .wrap { overflow-x:auto; padding:0 24px 60px }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line);
+    font-size:14px; vertical-align:top }
+  th { cursor:pointer; user-select:none; white-space:nowrap;
+    position:sticky; top:0; background:var(--bg) }
+  td.num, th.num { text-align:right; font-variant-numeric:tabular-nums }
+  a { color:var(--acc); text-decoration:none }
+  a:hover { text-decoration:underline }
+  .badge { font-size:11px; color:var(--mut); border:1px solid var(--line);
+    border-radius:10px; padding:0 7px; white-space:nowrap }
+</style>
+</head>
+<body>
+<header>
+  <h1>ProQuest ETD institutions × Internet Archive holdings</h1>
+  <div class="sub">The 541 institutions on ProQuest's 2014
+    <a href="https://web.archive.org/web/20260829203559/https://about.proquest.com/globalassets/proquest/files/pdf-files/etd_participatinginstitutions.pdf">ETD
+    participating-institutions roster</a>, joined to this project's census:
+    their repositories, and how many of their theses we hold catalogs for ·
+    <a href="./">Internet Archive Europe ETD project</a></div>
+</header>
+<div id="controls">
+  <input id="q" type="search" placeholder="Filter institutions…">
+  <select id="fStatus">
+    <option value="">All</option>
+    <option value="in-census">In our census</option>
+    <option value="not-in-census">Not in census (ProQuest-only)</option>
+    <option value="unambiguous">Unambiguous matches</option>
+  </select>
+  <button id="share" title="Copy a link to this view"
+    style="border:1px solid var(--line);background:var(--card);color:var(--fg);
+    border-radius:6px;padding:8px 12px;cursor:pointer">🔗</button>
+  <span id="stats"></span>
+</div>
+<div class="wrap"><table id="t">
+  <thead><tr>
+    <th data-k="institution">Institution</th>
+    <th data-k="repository_hosts">Repository</th>
+    <th class="num" data-k="our_records">Our records</th>
+    <th class="num" data-k="our_theses">Our theses</th>
+    <th data-k="match_quality">Match</th>
+  </tr></thead><tbody></tbody>
+</table></div>
+<script>
+"use strict";
+let rows = [], sortK = "our_theses", sortAsc = false;
+const $ = id => document.getElementById(id);
+function setParams(o){const u=new URL(location.href);
+  for(const[k,v]of Object.entries(o)){if(!v)u.searchParams.delete(k);
+    else u.searchParams.set(k,v);}history.replaceState({},"",u);}
+function render(){
+  const q=$("q").value.trim().toLowerCase(), f=$("fStatus").value;
+  setParams({q:$("q").value.trim(),f});
+  let v=rows.filter(r=>(!q||r.institution.toLowerCase().includes(q)||
+      r.repository_hosts.includes(q)));
+  if(f==="unambiguous")v=v.filter(r=>r.match_quality==="unambiguous");
+  else if(f)v=v.filter(r=>r.status===f);
+  v.sort((a,b)=>{const x=a[sortK],y=b[sortK];
+    const r=(typeof x==="number")?x-y:String(x).localeCompare(String(y));
+    return sortAsc?r:-r;});
+  const tb=document.querySelector("#t tbody");tb.textContent="";
+  const frag=document.createDocumentFragment();
+  for(const r of v){
+    const tr=document.createElement("tr");
+    const t1=document.createElement("td");
+    if(r.institution_url){const a=document.createElement("a");
+      a.href=r.institution_url;a.target="_blank";a.rel="noopener";
+      a.textContent=r.institution;t1.appendChild(a);}
+    else t1.textContent=r.institution;
+    const t2=document.createElement("td");
+    r.repository_hosts.split(";").filter(Boolean).forEach((h,i)=>{
+      if(i)t2.appendChild(document.createTextNode(" · "));
+      const a=document.createElement("a");
+      a.href="?item=etd-catalog-"+h.toLowerCase().replace(/[^a-z0-9]+/g,"-");
+      a.href="./"+a.getAttribute("href");
+      a.target="_blank";a.rel="noopener";a.textContent=h;
+      t2.appendChild(a);});
+    const t3=document.createElement("td");t3.className="num";
+    t3.textContent=r.our_records?r.our_records.toLocaleString():"";
+    const t4=document.createElement("td");t4.className="num";
+    t4.textContent=r.our_theses?r.our_theses.toLocaleString():"";
+    const t5=document.createElement("td");
+    if(r.match_quality){const b=document.createElement("span");
+      b.className="badge";b.textContent=r.match_quality;t5.appendChild(b);}
+    else if(r.status==="not-in-census"){const b=document.createElement("span");
+      b.className="badge";b.textContent="ProQuest-only";t5.appendChild(b);}
+    tr.append(t1,t2,t3,t4,t5);frag.appendChild(tr);
+  }
+  tb.appendChild(frag);
+  $("stats").textContent=`${v.length} of ${rows.length} institutions`;
+}
+async function main(){
+  const txt=await (await fetch("pqdt.tsv")).text();
+  const lines=txt.trim().split("\n");
+  const head=lines[0].split("\t");
+  rows=lines.slice(1).map(l=>{
+    const c=l.split("\t"),o={};
+    head.forEach((h,i)=>o[h]=c[i]||"");
+    o.our_records=+o.our_records||0;o.our_theses=+o.our_theses||0;
+    return o;});
+  const P=new URLSearchParams(location.search);
+  if(P.get("q"))$("q").value=P.get("q");
+  if(P.get("f"))$("fStatus").value=P.get("f");
+  render();
+}
+$("q").addEventListener("input",()=>{clearTimeout(window._t);
+  window._t=setTimeout(render,200);});
+$("fStatus").addEventListener("change",render);
+document.querySelectorAll("th").forEach(th=>th.onclick=()=>{
+  const k=th.dataset.k;if(!k)return;
+  if(sortK===k)sortAsc=!sortAsc;else{sortK=k;sortAsc=k==="institution";}
+  render();});
+$("share").onclick=async()=>{try{await navigator.clipboard.writeText(location.href);
+  $("share").textContent="✓";}catch(e){prompt("Copy:",location.href);}
+  setTimeout(()=>$("share").textContent="🔗",1500);};
+main();
+</script>
+</body>
+</html>
