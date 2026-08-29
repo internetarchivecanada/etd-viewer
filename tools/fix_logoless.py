@@ -80,7 +80,14 @@ def main():
             except Exception:
                 return "meta-err"
             if not host: return "no-host"
-            if not wb_logo(host, out): return "not-found"
+            # live site first (full quality pipeline: brand imgs, parent
+            # university, SVG rasterizing); Wayback only as the fallback
+            subprocess.run(["timeout", "90", "python3",
+                            "/Users/brewster/tmp/etd/capture/fetch_logo.py",
+                            f"https://{host}/", str(out)],
+                           capture_output=True)
+            if not out.exists() and not wb_logo(host, out):
+                return "not-found"
         try:
             rr = internetarchive.get_item(ident).upload(
                 files={"logo.png": str(out)}, retries=3)
