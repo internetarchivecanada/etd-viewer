@@ -196,7 +196,10 @@ async function directory() {
     (await fetch(
       "https://archive.org/advancedsearch.php?q=collection%3Aetd-catalogs" +
       "&fl%5B%5D=identifier&fl%5B%5D=title&fl%5B%5D=publicdate&rows=10000&output=json")).json(),
-    fetch("manifest.json").then(x => x.json()).catch(() => ({}))]);
+    fetch("manifest.json").then(x => x.json()).catch(() => ({})),
+    ]);
+  const scrape = await fetch("oaiscrape.json").then(x => x.json())
+    .catch(() => ({}));
   const docs = (r.response.docs || []).map(d => ({
     id: d.identifier,
     name: (d.title || d.identifier).replace(/^Repository catalog of /, ""),
@@ -223,11 +226,13 @@ async function directory() {
   };
   const card = d => {
     const a = document.createElement("a");
-    a.className = "card"; a.href = "?item=" + d.id;
+    a.className = "card";
+    a.href = d.scrapeHost ? ("https://web.archive.org/web/2/https://" +
+                             d.scrapeHost + "/") : "?item=" + d.id;
     a.target = "_blank"; a.rel = "noopener";
     const img = document.createElement("img");
     img.loading = "lazy"; img.alt = "";
-    img.src = "logos/" + d.id + ".png";
+    img.src = d.scrapeHost ? "data:," : "logos/" + d.id + ".png";
     let tried = 0;
     img.onerror = () => {
       if (tried++ === 0) {
@@ -243,9 +248,11 @@ async function directory() {
     if (d.tot || d.th) {
       const c = document.createElement("div");
       c.style.cssText = "font-size:12px;color:var(--mut)";
-      c.textContent = [d.tot ? d.tot.toLocaleString() + " records" : "",
-                       d.th ? d.th.toLocaleString() + " theses" : ""]
-                      .filter(Boolean).join(" · ");
+      c.textContent = d.scrapeHost
+        ? d.th.toLocaleString() + " thesis URLs in the scrape"
+        : [d.tot ? d.tot.toLocaleString() + " records" : "",
+           d.th ? d.th.toLocaleString() + " theses" : ""]
+          .filter(Boolean).join(" · ");
       n.appendChild(c);
     }
     if (d.st === "archive") {
@@ -272,7 +279,14 @@ async function directory() {
        f.filter(d => d.kind === "inst")],
       ["Aggregators & national portals",
        "Union catalogs, national libraries, and resolver services.",
-       f.filter(d => d.kind === "agg")]];
+       f.filter(d => d.kind === "agg")],
+      ["Seen in the 2026-02 web-wide OAI scrape — catalog items to come",
+       "Repositories holding theses in Internet Archive's February 2026 " +
+       "OAI scrape that this project has not yet catalogued individually.",
+       Object.entries(scrape)
+         .filter(([h]) => !q || h.toLowerCase().includes(q))
+         .map(([h, n]) => ({ scrapeHost: h, name: h, th: n, tot: n,
+                             st: "active", kind: "scrape" }))]];
     for (const [title, sub, list] of sections) {
       if (!list.length) continue;
       const h = document.createElement("h2"); h.className = "sec";
