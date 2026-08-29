@@ -327,7 +327,8 @@ async function main() {
     document.title = name;
     const files = (meta.files || []).map(f => f.name);
     const rec = files.find(f => f === "records.jsonl") ||
-                files.find(f => f.endsWith("records.jsonl.gz"));
+                files.find(f => f.endsWith("records.jsonl.gz")) ||
+                files.find(f => /^catalog-2023-sweep-.*\.ndjson\.gz$/.test(f));
     if (!rec) throw new Error("no records.jsonl in this item");
     $("subtitle").innerHTML = `<a href="./">← All repositories</a> · ` +
       "Streaming " + rec + " …";
@@ -350,7 +351,16 @@ async function main() {
       const lines = buf.split("\n"); buf = lines.pop();
       for (const ln of lines) {
         if (!ln) continue;
-        try { all.push(JSON.parse(ln)); } catch (e) {}
+        try {
+          const r = JSON.parse(ln);
+          if (r.titles && !r.title) {          // 2023 rescue schema
+            r.title = (r.titles || [])[0];
+            r.type = r.types; r.language = r.languages;
+            r.oai_id = r.oai; r.date = r.datestamp;
+            r.subjects = r.subjects || [];
+          }
+          all.push(r);
+        } catch (e) {}
       }
       n = all.length;
       if (n % 5000 < 50) {
