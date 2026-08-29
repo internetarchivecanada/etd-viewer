@@ -82,10 +82,30 @@ def main():
             if not host: return "no-host"
             # live site first (full quality pipeline: brand imgs, parent
             # university, SVG rasterizing); Wayback only as the fallback
-            subprocess.run(["timeout", "90", "python3",
-                            "/Users/brewster/tmp/etd/capture/fetch_logo.py",
+            FL = "/Users/brewster/tmp/etd/capture/fetch_logo.py"
+            subprocess.run(["timeout", "90", "python3", FL,
                             f"https://{host}/", str(out)],
                            capture_output=True)
+            if not out.exists():
+                # the repository may be dead while its university lives:
+                # walk up the domain (dspace.uni.edu -> uni.edu) and take
+                # the institution's own logo
+                SLD = {"ac", "edu", "co", "com", "org", "gov", "net", "or"}
+                labels = host.split(":")[0].split(".")
+                while len(labels) > 2 and not out.exists():
+                    labels = labels[1:]
+                    if len(labels) == 2 and labels[0] in SLD:
+                        break              # ac.uk itself is not a site
+                    parent = ".".join(labels)
+                    if len(labels) >= 3 and labels[-3] in SLD:
+                        pass               # e.g. x.ac.uk is a real site
+                    for cand in (f"https://{parent}/",
+                                 f"https://www.{parent}/"):
+                        subprocess.run(["timeout", "90", "python3", FL,
+                                        cand, str(out)],
+                                       capture_output=True)
+                        if out.exists():
+                            break
             if not out.exists() and not wb_logo(host, out):
                 return "not-found"
         try:
