@@ -162,7 +162,8 @@ function row(r) {
     a.target = "_blank";
     links.appendChild(a);
   };
-  if (live) { add(live, "live ↗"); add("https://web.archive.org/web/2/" + live, "wayback"); }
+  if (live) { add(live, "live ↗");
+    add(r.wayback_exact || ("https://web.archive.org/web/2/" + live), "wayback"); }
   if (u.doc && u.doc !== live) {
     add(u.doc, "document ↗");
     add("https://web.archive.org/web/2/" + u.doc, "wayback (document)");
@@ -375,6 +376,7 @@ async function main() {
     document.title = name;
     const files = (meta.files || []).map(f => f.name);
     const rec = files.find(f => f === "records.jsonl") ||
+                files.find(f => /^scholar-catalog.*\.jsonl$/.test(f)) ||
                 files.find(f => f.endsWith("records.jsonl.gz")) ||
                 files.find(f => /^catalog-2023-sweep-.*\.ndjson\.gz$/.test(f)) ||
                 files.find(f => /\.(jsonl|ndjson)(\.gz)?$/.test(f) &&
@@ -437,6 +439,15 @@ async function main() {
             r.creators = [(r.edit_extra || {}).etd_host || ""];
             r.type = [r.ingest_type + " ingest request"];
             r.oai_id = r.link_source_id;
+          }
+          if (r.sha1 && r.wayback && !r.oai_id) { // scholar-derived catalog
+            r.creators = r.authors || [];
+            r.type = ["thesis (scholar-derived)"];
+            r.date = r.year ? String(r.year) : undefined;
+            r.language = r.lang ? [r.lang] : [];
+            r.urls = [r.url];
+            r.wayback_exact = r.wayback;
+            r.oai_id = r.doi ? "doi:" + r.doi : "sha1:" + r.sha1;
           }
           if (r.titles && !r.title) {          // 2023 rescue schema
             r.title = (r.titles || [])[0];
