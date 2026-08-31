@@ -15,6 +15,9 @@
   body { margin:0; background:var(--bg); color:var(--fg);
     font:15px/1.5 system-ui, sans-serif; }
   header { padding:20px 24px 12px; border-bottom:1px solid var(--line); }
+  a.iae { float:left; margin:4px 18px 4px 0 }
+  a.iae img { height:44px; display:block }
+  @media (prefers-color-scheme: dark) { a.iae img { filter:invert(1) } }
   h1 { margin:0 0 2px; font-size:20px; }
   h1 a { color:inherit; text-decoration:none }
   .sub { color:var(--mut); font-size:13px; }
@@ -65,6 +68,7 @@
 </head>
 <body>
 <header>
+  <a class="iae" href="https://www.internetarchive.eu/" title="Internet Archive Europe"><img src="iae-logo.png" alt="Internet Archive Europe"></a>
   <h1 id="title">ETD catalog viewer</h1>
   <div class="sub" id="subtitle">
     Loading… Pass <code>?item=&lt;identifier&gt;</code> of any
