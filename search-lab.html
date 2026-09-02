@@ -43,7 +43,7 @@
 <main><div id="facets"></div><div id="resultwrap"><div id="results"></div></div></main>
 <script>
 const $=s=>document.querySelector(s);
-let META=null, DIR=null, nreq=0, nbytes=0;
+let META=null, DIR=null, nreq=0, nbytes=0, BOOTERR=null;
 let SIDE=null, FMETA=null, lastRanked=[];
 const filters={src:new Set(),tier:new Set(),dom:new Set(),dec:new Set()};
 const SRC=[["wbm-mine",1],["spn-saved",2],["cdx-already",4],["ia-item",8]];
@@ -82,7 +82,9 @@ async function range(file,off,len){
 }
 
 async function boot(){
-  META=await (await fetch("https://archive.org/download/etd-search-lab/index-meta.json?t="+Date.now())).json();
+  const mr=await fetch("https://archive.org/download/etd-search-lab/index-meta.json?t="+Date.now());
+  if(!mr.ok) throw new Error("index not available yet (HTTP "+mr.status+") — the item may still be assembling; try again in a few minutes");
+  META=await mr.json();
   const d=await (await fetch("https://archive.org/download/etd-search-lab/dict.dir.json")).arrayBuffer();
   DIR=new BigUint64Array(d);
   // facet sidecar: 8B/doc, ids align with this index's docids (Tier 1).
@@ -177,6 +179,7 @@ const dec=new TextDecoder();
 function cstr(u8,a,b){const s=u8.subarray(a,b);let e=s.indexOf(0);return dec.decode(e<0?s:s.subarray(0,e));}
 
 async function run(qstr){
+  if(!META||!DIR){$("#stat").innerHTML='<span class="err">'+esc(BOOTERR||"still booting — retry in a moment")+"</span>";return;}
   const t0=performance.now(); nreq=0; nbytes=0;
   $("#stat").textContent="searching…"; $("#results").innerHTML="";
   try{
@@ -257,5 +260,6 @@ const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"
 $("#f").addEventListener("submit",e=>{e.preventDefault();
   const q=$("#q").value.trim();
   history.replaceState(null,"","?q="+encodeURIComponent(q)); run(q);});
-boot();
+boot().catch(e=>{BOOTERR=String(e.message||e);
+  $("#stat").innerHTML='<span class="err">'+esc(BOOTERR)+"</span>";});
 </script></body></html>
