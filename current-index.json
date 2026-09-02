@@ -1,0 +1,6 @@
+{
+  "comment": "THE pointer to the current thesis search index. Update this file (git) to move the search to a new build/item; the page reads nothing else. History: labs etd-search-lab (1.96M) and etd-search-lab-5m (5M) are retired.",
+  "item": "etd-search-full",
+  "updated": "2026-09-02",
+  "docs_note": "13.5M catalogue + tier-1, fielded terms (title:/creator:/abstract:), dedup v1 applied"
+}

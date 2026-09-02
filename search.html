@@ -1,0 +1,438 @@
+<!doctype html>
+<!-- Impact-ordered static-index search: the "no database" prototype (#22).
+
+     Everything here is plain fetch() + arithmetic: no SQLite, no WASM, no
+     sync XHR. A query is three PARALLEL phases:
+       1. one small range read per term into dict.bin (bucket located by
+          fnv1a hash via dict.dir, downloaded once at boot)
+       2. one range read per term into postings.bin (impact-ordered,
+          truncated lists; <= ~60KB each)
+       3. 320-byte range reads for the ~25 stubs being displayed
+     so wall time is ~3 round trips regardless of how common the words are.
+     Compare search.html (SQLite FTS5 over ranges): "sea" = 157s, 1,796
+     sequential requests. Facets ride the existing Tier-1 sidecar (8B/doc,
+     ~1MB gz, fetched once at boot); doc ids align by construction.  -->
+<html><head><meta charset="utf-8">
+<title>Theses Search</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+ :root{--fg:#1c1d1f;--mut:#767a80;--acc:#8a3318;--bg:#faf9f7;--line:#e4e1db}
+ body{font:16px/1.45 Georgia,serif;color:var(--fg);background:var(--bg);
+      max-width:780px;margin:2rem auto;padding:0 1rem}
+ h1{font-size:22px;margin:0 0 2px}
+ .sub{color:var(--mut);font-size:13px;margin-bottom:14px}
+ /* the search box only -- a bare `input` selector made every facet
+    CHECKBOX 100% wide, which was the real cause of days of label chaos */
+ #q{font:inherit;width:100%;padding:8px 10px;border:1px solid var(--line);
+    border-radius:4px;background:#fff;box-sizing:border-box}
+ #facets input{margin:0 .45em 0 0;vertical-align:-1px}
+ .stat{color:var(--mut);font-size:13px;margin:10px 0}
+ .r{padding:10px 0;border-top:1px solid var(--line)}
+ .t{color:var(--acc);text-decoration:none;font-weight:bold}
+ .m{color:var(--mut);font-size:13px;margin-top:2px}
+ mark{background:#f3e6c8}
+ .err{color:#a33}
+ main{display:flex;gap:18px}
+ #facets{width:225px;min-width:225px;font-size:13px;border-right:1px solid var(--line);padding-right:14px}
+ #facets h3{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:14px 0 4px}
+ /* deliberately boring: no flex, no float, no ellipsis. WebKit computed
+    zero/near-zero widths for flexed spans inside <label> two different
+    ways; plain inline flow renders everywhere. Long names wrap. */
+ #facets label{display:block;cursor:pointer;padding:1px 0;overflow-wrap:anywhere}
+ #facets .n{color:var(--mut)}
+ #facets .n{color:var(--mut)}
+ #resultwrap{flex:1;min-width:0}
+</style></head><body>
+<h1>Theses Search</h1>
+<div class="sub" id="sub">every open thesis we know — one static index, no servers</div>
+<form id="f"><input id="q" placeholder='terms, "a phrase", AND OR NOT (), year:2019, host:mit, has:abstract' autofocus></form>
+<div class="stat" id="stat"></div>
+<main><div id="facets"></div><div id="resultwrap"><div id="results"></div></div></main>
+<script>
+const $=s=>document.querySelector(s);
+let META=null, DIR=null, nreq=0, nbytes=0, BOOTERR=null;
+let SIDE=null, FMETA=null, lastRanked=[];
+const filters={src:new Set(),tier:new Set(),dom:new Set(),dec:new Set()};
+let SRC=[];   // [label, bit] pairs, derived from the sidecar meta at boot
+const NONSRC=new Set(["tierA","tierB","hasTitle","hasAbstract"]);
+
+// ---- must match impact_index.py exactly ----
+const TOKRE=/[0-9a-zà-ɏͰ-῿぀-鿿가-힯]+/gu;
+const CJKRE=/[぀-鿿가-힯]/u;
+function tokens(text){
+  const out=[];
+  for(const m of (text||"").normalize("NFC").toLowerCase().matchAll(TOKRE)){
+    const t=m[0];
+    if(t.length>2 && CJKRE.test(t)){
+      for(let i=0;i<t.length-1;i++) out.push(t.slice(i,i+2));
+    } else out.push(t);
+  }
+  return out;
+}
+function fnv1a(term){
+  let h=0x811c9dc5;
+  for(const b of new TextEncoder().encode(term)){
+    h^=b; h=Math.imul(h,0x01000193)>>>0;
+  }
+  return h>>>0;
+}
+function rvarint(u8,i){
+  let n=0,s=0;
+  for(;;){const b=u8[i++]; n+=(b&0x7f)*2**s; if(!(b&0x80))return [n,i]; s+=7;}
+}
+async function range(file,off,len){
+  nreq++;
+  const r=await fetch(file,{headers:{Range:`bytes=${off}-${off+len-1}`}});
+  if(!(r.status===206||r.status===200)) throw new Error(`${file}: HTTP ${r.status}`);
+  const buf=new Uint8Array(await r.arrayBuffer());
+  nbytes+=buf.length;
+  return buf.length>len?buf.slice(0,len):buf;   // 200 fallback safety
+}
+
+let DATA="";
+async function boot(){
+  const cur=await (await fetch("current-index.json?t="+Date.now())).json();
+  DATA=`https://archive.org/download/${cur.item}/`;
+  let mr;
+  try{ mr=await fetch(DATA+"index-meta.json?t="+Date.now()); }
+  catch(e){ throw new Error("index data not reachable — the archive.org item is probably still assembling its files (task queue); try again in a few minutes"); }
+  if(!mr.ok) throw new Error("index not available yet (HTTP "+mr.status+") — the item may still be assembling; try again in a few minutes");
+  META=await mr.json();
+  const d=await (await fetch(DATA+"dict.dir.json")).arrayBuffer();
+  DIR=new BigUint64Array(d);
+  // facet sidecar: 8B/doc, ids align with this index's docids (Tier 1).
+  // Served gzip under a .json name (IA grants CORS by extension); datanodes
+  // sometimes set Content-Encoding so the body may arrive pre-inflated.
+  try{
+    FMETA=await (await fetch(DATA+"facets-meta.json")).json();
+    const g=await fetch(DATA+"facets.gz.json");
+    let buf;
+    try{buf=await new Response(g.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();}
+    catch(e){buf=await (await fetch(DATA+"facets.gz.json")).arrayBuffer();}
+    SIDE=new DataView(buf);
+    SRC=Object.entries(FMETA.flag_bits||{}).filter(([k])=>!NONSRC.has(k))
+        .map(([k,v])=>[k,v]);
+  }catch(e){
+    // No facet sidecar. Expected for any corpus wider than Tier 1: docids
+    // beyond 1.96M have no sidecar rows, so the full 15.47M index ships
+    // without one. Emptying the panel is not enough -- its CSS reserves a
+    // 225px column, which would render as a blank gutter -- so hide it.
+    console.warn("facets unavailable:",e);
+    $("#facets").style.display="none";
+  }
+  $("#sub").textContent=`${META.n_docs.toLocaleString()} documents · built ${META.built} · postings ${(META.postings_bytes/1e6).toFixed(0)}MB static`;
+  const q=new URLSearchParams(location.search).get("q");
+  if(q){$("#q").value=q; run(q);}
+}
+
+// ---- boolean grammar (same spec as impact_index.py: adjacency=OR,
+// UPPERCASE operators, field:value lifts to global sidecar filters) ----
+const FIELD_RE=/^(year|host|source|has|title|creator|abstract):(.+)$/;
+function qtokens(q){
+  const out=[]; let i=0;
+  while(i<q.length){
+    const ch=q[i];
+    if(/\s/.test(ch)){i++;}
+    else if(ch==="("||ch===")"){out.push(ch);i++;}
+    else if(ch==='"'){let j=q.indexOf('"',i+1); if(j<0)j=q.length;
+      out.push(["PH",q.slice(i+1,j)]); i=j+1;}
+    else{let j=i; while(j<q.length&&!/[\s()"]/.test(q[j]))j++;
+      let w=q.slice(i,j); i=j;
+      if(w.endsWith(":")&&i<q.length&&q[i]==='"'){
+        const k2=q.indexOf('"',i+1);
+        if(k2>=0){w+=q.slice(i,k2+1); i=k2+1;}}
+      if(/^\w+:\[/.test(w)&&!w.includes("]")){
+        const k2=q.indexOf("]",i); if(k2>=0){w+=q.slice(i,k2+1); i=k2+1;}}
+      if(w==="AND"||w==="OR"||w==="NOT")out.push(w);
+      else{const m=FIELD_RE.exec(w);
+        out.push(m?["FLD",m[1],m[2]]:["TM",w]);}}
+  }
+  return out;
+}
+function qparse(toks){
+  const fields=[]; let pos=0;
+  function unit(){
+    while(pos<toks.length){
+      const t=toks[pos];
+      if(t==="NOT"){pos++;
+        const before=fields.length;
+        const u=unit();
+        if(u===null&&fields.length>before){fields[fields.length-1][0]=true;return null;}
+        return ["notu",u];}
+      if(t==="("){pos++; const e=expr();
+        if(pos<toks.length&&toks[pos]===")")pos++;
+        return e;}
+      if(Array.isArray(t)){pos++;
+        if(t[0]==="PH")return ["ph",t[1]];
+        if(t[0]==="FLD"){
+          const tf={title:"t:",creator:"c:",abstract:"a:"}[t[1]];
+          if(tf){
+            const v=t[2];
+            if(v.startsWith('"')&&v.endsWith('"'))return ["ph",v.slice(1,-1),tf];
+            return ["tm",v,tf];}
+          fields.push([false,t[1],t[2]]);return null;}
+        return ["tm",t[1]];}
+      pos++;
+    }
+    return null;
+  }
+  function expr(){
+    let left=unit();
+    while(pos<toks.length){
+      const t=toks[pos];
+      if(t===")")break;
+      let op="or";
+      if(t==="AND"||t==="OR"){op=t.toLowerCase();pos++;
+        if(pos>=toks.length)break;}
+      let right=unit();
+      if(right===null)continue;
+      if(Array.isArray(right)&&right[0]==="notu"){
+        if(right[1]!==null)
+          left=left!==null?["not",left,right[1]]:["not",["all"],right[1]];
+        continue;}
+      left=left!==null?[op,left,right]:right;
+    }
+    if(Array.isArray(left)&&left[0]==="notu")
+      left=left[1]!==null?["not",null,left[1]]:null;
+    return left;
+  }
+  return [expr(),fields];
+}
+let APPROX=false;
+const PFXS=["t:","c:","a:"];
+async function unitMaps(text,kind,entries,lists,commons,N,pfx){
+  const toks=tokens(text);
+  let base=[...toks];
+  if(kind==="ph")
+    for(let i2=0;i2<toks.length-1;i2++)
+      if(!commons.size||commons.has(toks[i2])||commons.has(toks[i2+1]))
+        base.push(`${toks[i2]}_${toks[i2+1]}`);
+  const prefixes=pfx?[pfx]:PFXS;
+  const acc=new Map(); let complete=true; const sets=[];
+  for(const bt of base){
+    let gotAny=false, dfSum=0, uComplete=true;
+    const union=new Set(); const per=[];
+    for(const px of prefixes){
+      const e=entries.get(px+bt), pl=lists.get(px+bt);
+      if(!e||!pl||!pl.length){if(e&&e.df)uComplete=false;continue;}
+      gotAny=true; dfSum+=e.df;
+      if(pl.length<e.df)uComplete=false;
+      else for(const[d]of pl)union.add(d);
+      per.push(pl);
+    }
+    if(!gotAny){complete=false;continue;}
+    if(!uComplete)complete=false;
+    else if(kind==="ph")sets.push(union);
+    const idf=Math.log(1+(N-dfSum+0.5)/(dfSum+0.5));
+    for(const pl of per)for(const[d,q2]of pl)acc.set(d,(acc.get(d)||0)+q2*idf);
+  }
+  if(kind==="ph"&&sets.length)
+    for(const d of[...acc.keys()])
+      if(!sets.every(s2=>s2.has(d)))acc.delete(d);
+  return [acc,complete];
+}
+async function evalNode(node,entries,lists,commons,N){
+  if(node===null)return [new Map(),true];
+  const op=node[0];
+  if(op==="tm"||op==="ph")return unitMaps(node[1],op,entries,lists,commons,N,node[2]);
+  if(op==="all")return [new Map(),false];
+  const [a,ca]=await evalNode(node[1],entries,lists,commons,N);
+  const [b,cb]=await evalNode(node[2],entries,lists,commons,N);
+  if(op==="not"){
+    if(!cb)APPROX=true;
+    for(const d of[...a.keys()])if(b.has(d))a.delete(d);
+    return [a,ca&&cb];}
+  if(op==="and"){
+    if(!(ca&&cb))APPROX=true;
+    const out=new Map();
+    for(const[d,s2]of a)if(b.has(d))out.set(d,s2+b.get(d));
+    return [out,ca&&cb];}
+  for(const[d,s2]of b)a.set(d,(a.get(d)||0)+s2);
+  return [a,ca&&cb];
+}
+function treeTerms(node,commons,out){
+  if(node===null)return out;
+  const op=node[0];
+  if(op==="tm"||op==="ph"){
+    const toks=tokens(node[1]);
+    const base=[...toks];
+    if(op==="ph")
+      for(let i2=0;i2<toks.length-1;i2++)
+        if(!commons.size||commons.has(toks[i2])||commons.has(toks[i2+1]))
+          base.push(`${toks[i2]}_${toks[i2+1]}`);
+    const prefixes=node[2]?[node[2]]:PFXS;
+    for(const bt of base)for(const px of prefixes)out.push(px+bt);
+    return out;}
+  if(op==="all")return out;
+  if(typeof node[1]==="object"&&node[1])treeTerms(node[1],commons,out);
+  if(typeof node[2]==="object"&&node[2])treeTerms(node[2],commons,out);
+  return out;
+}
+function fieldPredicates(fields){
+  // -> [fn(docid)->bool] over the sidecar; unsupported text fields reported
+  const preds=[], unsupported=[];
+  for(const[neg,f,v]of fields){
+    let fn=null;
+    if(f==="year"){
+      const m=/^\[(\d{4})\s+TO\s+(\d{4})\]$/.exec(v);
+      const lo=m?+m[1]:+v, hi=m?+m[2]:+v;
+      if(!isNaN(lo))fn=i=>{const y=SIDE.getUint8((i-1)*8);
+        return y>0&&y+1900>=lo&&y+1900<=hi;};
+    }else if(f==="host"){
+      const want=v.toLowerCase(); const ids=new Set();
+      (FMETA?.domains||[]).forEach((d2,k2)=>{if(d2&&d2.toLowerCase().includes(want))ids.add(k2+1);});
+      fn=i=>ids.has(SIDE.getUint16((i-1)*8+2,true));
+    }else if(f==="has"&&v==="abstract"){
+      fn=i=>(SIDE.getUint8((i-1)*8+1)&128)!==0;
+    }else if(f==="source"){
+      const bit=(FMETA?.flag_bits||{})[v];
+      if(bit)fn=i=>(SIDE.getUint8((i-1)*8+1)&bit)!==0;
+    }else{unsupported.push(f+":");continue;}
+    if(fn)preds.push(neg?(i=>!fn(i)):fn);
+  }
+  return [preds,unsupported];
+}
+
+async function lookupTerms(terms){
+  // phase 1: all dict buckets in parallel (dedup same-bucket fetches)
+  const uniq=[...new Set(terms)];
+  const byBucket=new Map();
+  for(const t of uniq){
+    const b=fnv1a(t)&0xffff;
+    if(!byBucket.has(b)) byBucket.set(b,[]);
+    byBucket.get(b).push(t);
+  }
+  const entries=new Map();
+  await Promise.all([...byBucket.entries()].map(async([b,ts])=>{
+    const off=Number(DIR[b]), end=Number(DIR[b+1]);
+    if(end<=off){return;}
+    const u8=await range(DATA+"dict.bin.json",off,end-off);
+    const want=new Map(ts.map(t=>[t,new TextEncoder().encode(t)]));
+    let i=0;
+    while(i<u8.length){
+      let tl;[tl,i]=rvarint(u8,i);
+      const tb=u8.subarray(i,i+tl); i+=tl;
+      let o,ln,df;[o,i]=rvarint(u8,i);[ln,i]=rvarint(u8,i);[df,i]=rvarint(u8,i);
+      for(const[t,w]of want)
+        if(w.length===tl&&w.every((x,k)=>x===tb[k])) entries.set(t,{o,ln,df});
+    }
+  }));
+  return entries;
+}
+
+async function postings(entry){
+  const u8=await range(DATA+"postings.bin.json",entry.o,entry.ln);
+  let i=0,df,ns;[df,i]=rvarint(u8,i);[ns,i]=rvarint(u8,i);
+  const out=[];
+  while(out.length<ns){
+    const q=u8[i++]; let cnt;[cnt,i]=rvarint(u8,i);
+    let d=0;
+    for(let k=0;k<cnt;k++){let dd;[dd,i]=rvarint(u8,i); d+=dd; out.push([d,q]);}
+  }
+  return out;
+}
+
+function pass(i){
+  if(!SIDE) return true;
+  const o=(i-1)*8, y=SIDE.getUint8(o), fl=SIDE.getUint8(o+1), dm=SIDE.getUint16(o+2,true);
+  if(filters.src.size && ![...filters.src].some(b=>fl&b)) return false;
+  if(filters.tier.size && ![...filters.tier].some(b=>fl&b)) return false;
+  if(filters.dom.size && !filters.dom.has(dm)) return false;
+  if(filters.dec.size && !filters.dec.has(y?(((y+1900)/10)|0)*10:0)) return false;
+  return true;
+}
+function drawFacets(ids){
+  if(!SIDE){$("#facets").innerHTML=""; $("#facets").style.display="none"; return;}
+  const cs={src:{},tier:{},dom:{},dec:{}};
+  for(const i of ids.slice(0,50000)){
+    const o=(i-1)*8, y=SIDE.getUint8(o), fl=SIDE.getUint8(o+1), dm=SIDE.getUint16(o+2,true);
+    for(const[,b]of SRC) if(fl&b) cs.src[b]=(cs.src[b]||0)+1;
+    for(const b of[16,32]) if(fl&b) cs.tier[b]=(cs.tier[b]||0)+1;
+    cs.dom[dm]=(cs.dom[dm]||0)+1;
+    const d=y?(((y+1900)/10)|0)*10:0; cs.dec[d]=(cs.dec[d]||0)+1;
+  }
+  const box=(title,entries,set,label)=>`<h3>${title}</h3>`+entries.map(([k,n])=>
+    `<label><input type="checkbox" data-g="${title}" data-k="${k}" ${set.has(+k)?"checked":""}> ${label(k)} <span class="n">(${n.toLocaleString()})</span></label>`).join("");
+  const hasTiers="tierA" in (FMETA.flag_bits||{});
+  let ab=0; for(const i of ids.slice(0,50000)) if(SIDE.getUint8((i-1)*8+1)&128) ab++;
+  $("#facets").innerHTML =
+    box("Source",SRC.map(([nm,b])=>[b,cs.src[b]||0]),filters.src,k=>SRC.find(([,b])=>b==k)[0])+
+    (hasTiers?box("Tier",[[16,cs.tier[16]||0],[32,cs.tier[32]||0]],filters.tier,k=>k==16?"A (confirmed)":"B (likely)"):"")+
+    box("Abstract",[[128,ab]],filters.tier,()=> "has abstract")+
+    box("Decade",Object.entries(cs.dec).sort((a,b)=>b[0]-a[0]).slice(0,12),filters.dec,k=>k==0?"unknown":k+"s")+
+    box("Institution",Object.entries(cs.dom).sort((a,b)=>b[1]-a[1]).slice(0,15),filters.dom,k=>(FMETA.domains||[])[k-1]||"other");
+  $("#facets").onchange=e=>{
+    const g={Source:"src",Tier:"tier",Abstract:"tier",Decade:"dec",Institution:"dom"}[e.target.dataset.g];
+    const k=+e.target.dataset.k;
+    e.target.checked?filters[g].add(k):filters[g].delete(k);
+    render();
+  };
+}
+const dec=new TextDecoder();
+function cstr(u8,a,b){const s=u8.subarray(a,b);let e=s.indexOf(0);return dec.decode(e<0?s:s.subarray(0,e));}
+
+async function run(qstr){
+  if(!META||!DIR){$("#stat").innerHTML='<span class="err">'+esc(BOOTERR||"still booting — retry in a moment")+"</span>";return;}
+  const t0=performance.now(); nreq=0; nbytes=0;
+  $("#stat").textContent="searching…"; $("#results").innerHTML="";
+  try{
+    const commons=new Set(META.commons||[]);
+    const [tree,fields]=qparse(qtokens(qstr));
+    const [fpreds,unsupported]=SIDE?fieldPredicates(fields):[[],[]];
+    if(unsupported.length)
+      $("#stat").textContent=`note: ${unsupported.join(" ")} fielded text search lands with the 13.5M build`;
+    if(fields.length&&!SIDE&&!tree){$("#stat").textContent="field filters need the facet sidecar (not on this index)";return;}
+    const all=treeTerms(tree,commons,[]);
+    if(!all.length&&!fpreds.length){$("#stat").textContent="no query terms";return;}
+    const entries=await lookupTerms(all);                       // phase 1
+    const lists=new Map();                                      // phase 2
+    await Promise.all([...new Set(all)].filter(t=>entries.has(t)).map(
+      async t=>lists.set(t,await postings(entries.get(t)))));
+    const N=META.n_docs;
+    APPROX=false;
+    let [acc]=await evalNode(tree,entries,lists,commons,N);
+    for(const fn of fpreds)
+      for(const d of[...acc.keys()]) if(!fn(d)) acc.delete(d);
+    let dfmax=0;
+    for(const t of new Set(all)){const e=entries.get(t); if(e)dfmax=Math.max(dfmax,e.df);}
+    const ids=[...acc.entries()].sort((a,b)=>b[1]-a[1]||a[0]-b[0]).slice(0,3000);
+    lastRanked=ids; drawFacets(ids.map(([d])=>d));
+    const top=ids.filter(([d])=>pass(d)).slice(0,25);
+    const stubs=await Promise.all(top.map(async([d])=>{          // phase 3
+      const u8=await range(DATA+"stubs.bin.json",(d-1)*META.stub_bytes,META.stub_bytes);
+      return {id:d,title:cstr(u8,0,150),creators:cstr(u8,150,198),
+              date:cstr(u8,198,208),dom:cstr(u8,208,232),url:cstr(u8,232,320)};
+    }));
+    const ms=(performance.now()-t0)|0;
+    const approx=(APPROX||acc.size>=10000)?"~":"";
+    $("#stat").textContent=`${approx}${Math.max(acc.size,0).toLocaleString()} matches in ${ms}ms · ${nreq} requests · ${(nbytes/1024)|0}KB fetched`;
+    $("#results").innerHTML=stubs.map(s=>`<div class="r">
+      <a class="t" href="${s.url||"#"}" target="_blank">${esc(s.title)||"(untitled)"}</a>
+      <div class="m">${esc(s.creators)}${s.creators&&s.date?" · ":""}${esc(s.date)} · ${esc(s.dom)} · #${s.id}</div></div>`).join("")
+      ||"<p class='m'>No results.</p>";
+  }catch(e){
+    $("#stat").innerHTML=`<span class="err">failed: ${esc(String(e))}</span>`;
+  }
+}
+async function render(){
+  const t0=performance.now();
+  const top=lastRanked.filter(([d])=>pass(d)).slice(0,25);
+  const stubs=await Promise.all(top.map(async([d])=>{
+    const u8=await range(DATA+"stubs.bin.json",(d-1)*META.stub_bytes,META.stub_bytes);
+    return {id:d,title:cstr(u8,0,150),creators:cstr(u8,150,198),
+            date:cstr(u8,198,208),dom:cstr(u8,208,232),url:cstr(u8,232,320)};
+  }));
+  const nf=lastRanked.filter(([d])=>pass(d)).length;
+  $("#stat").textContent=`${nf.toLocaleString()} of top ${lastRanked.length.toLocaleString()} pass filters (${(performance.now()-t0)|0}ms, no new search)`;
+  $("#results").innerHTML=stubs.map(s=>`<div class="r">
+    <a class="t" href="${s.url||"#"}" target="_blank">${esc(s.title)||"(untitled)"}</a>
+    <div class="m">${esc(s.creators)}${s.creators&&s.date?" · ":""}${esc(s.date)} · ${esc(s.dom)} · #${s.id}</div></div>`).join("")
+    ||"<p class='m'>No results under these filters.</p>";
+}
+const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+$("#f").addEventListener("submit",e=>{e.preventDefault();
+  const q=$("#q").value.trim();
+  history.replaceState(null,"","?q="+encodeURIComponent(q)); run(q);});
+boot().catch(e=>{BOOTERR=String(e.message||e);
+  $("#stat").innerHTML='<span class="err">'+esc(BOOTERR)+"</span>";});
+</script></body></html>
