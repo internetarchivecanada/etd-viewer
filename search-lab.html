@@ -82,7 +82,9 @@ async function range(file,off,len){
 }
 
 async function boot(){
-  const mr=await fetch("https://archive.org/download/etd-search-lab/index-meta.json?t="+Date.now());
+  let mr;
+  try{ mr=await fetch("https://archive.org/download/etd-search-lab/index-meta.json?t="+Date.now()); }
+  catch(e){ throw new Error("index data not reachable — the archive.org item is probably still assembling its files (task queue); try again in a few minutes"); }
   if(!mr.ok) throw new Error("index not available yet (HTTP "+mr.status+") — the item may still be assembling; try again in a few minutes");
   META=await mr.json();
   const d=await (await fetch("https://archive.org/download/etd-search-lab/dict.dir.json")).arrayBuffer();
