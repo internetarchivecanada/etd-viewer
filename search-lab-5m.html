@@ -21,8 +21,11 @@
       max-width:780px;margin:2rem auto;padding:0 1rem}
  h1{font-size:22px;margin:0 0 2px}
  .sub{color:var(--mut);font-size:13px;margin-bottom:14px}
- input{font:inherit;width:100%;padding:8px 10px;border:1px solid var(--line);
-       border-radius:4px;background:#fff}
+ /* the search box only -- a bare `input` selector made every facet
+    CHECKBOX 100% wide, which was the real cause of days of label chaos */
+ #q{font:inherit;width:100%;padding:8px 10px;border:1px solid var(--line);
+    border-radius:4px;background:#fff;box-sizing:border-box}
+ #facets input{margin:0 .45em 0 0;vertical-align:-1px}
  .stat{color:var(--mut);font-size:13px;margin:10px 0}
  .r{padding:10px 0;border-top:1px solid var(--line)}
  .t{color:var(--acc);text-decoration:none;font-weight:bold}
