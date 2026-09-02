@@ -46,7 +46,8 @@ const $=s=>document.querySelector(s);
 let META=null, DIR=null, nreq=0, nbytes=0, BOOTERR=null;
 let SIDE=null, FMETA=null, lastRanked=[];
 const filters={src:new Set(),tier:new Set(),dom:new Set(),dec:new Set()};
-const SRC=[["wbm-mine",1],["spn-saved",2],["cdx-already",4],["ia-item",8]];
+let SRC=[];   // [label, bit] pairs, derived from the sidecar meta at boot
+const NONSRC=new Set(["tierA","tierB","hasTitle","hasAbstract"]);
 
 // ---- must match impact_index.py exactly ----
 const TOKRE=/[0-9a-zà-ɏͰ-῿぀-鿿가-힯]+/gu;
@@ -99,6 +100,8 @@ async function boot(){
     try{buf=await new Response(g.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();}
     catch(e){buf=await (await fetch("https://archive.org/download/etd-search-lab-5m/facets.gz.json")).arrayBuffer();}
     SIDE=new DataView(buf);
+    SRC=Object.entries(FMETA.flag_bits||{}).filter(([k])=>!NONSRC.has(k))
+        .map(([k,v])=>[k,v]);
   }catch(e){ console.warn("facets unavailable:",e); }
   $("#sub").textContent=`${META.n_docs.toLocaleString()} documents · built ${META.built} · postings ${(META.postings_bytes/1e6).toFixed(0)}MB static`;
   const q=new URLSearchParams(location.search).get("q");
@@ -165,13 +168,16 @@ function drawFacets(ids){
   }
   const box=(title,entries,set,label)=>`<h3>${title}</h3>`+entries.map(([k,n])=>
     `<label><input type="checkbox" data-g="${title}" data-k="${k}" ${set.has(+k)?"checked":""}> ${label(k)} <span class="n">${n.toLocaleString()}</span></label>`).join("");
+  const hasTiers="tierA" in (FMETA.flag_bits||{});
+  let ab=0; for(const i of ids.slice(0,50000)) if(SIDE.getUint8((i-1)*8+1)&128) ab++;
   $("#facets").innerHTML =
     box("Source",SRC.map(([nm,b])=>[b,cs.src[b]||0]),filters.src,k=>SRC.find(([,b])=>b==k)[0])+
-    box("Tier",[[16,cs.tier[16]||0],[32,cs.tier[32]||0]],filters.tier,k=>k==16?"A (confirmed)":"B (likely)")+
+    (hasTiers?box("Tier",[[16,cs.tier[16]||0],[32,cs.tier[32]||0]],filters.tier,k=>k==16?"A (confirmed)":"B (likely)"):"")+
+    box("Abstract",[[128,ab]],filters.tier,()=> "has abstract")+
     box("Decade",Object.entries(cs.dec).sort((a,b)=>b[0]-a[0]).slice(0,12),filters.dec,k=>k==0?"unknown":k+"s")+
     box("Institution",Object.entries(cs.dom).sort((a,b)=>b[1]-a[1]).slice(0,15),filters.dom,k=>(FMETA.domains||[])[k-1]||"other");
   $("#facets").onchange=e=>{
-    const g={Source:"src",Tier:"tier",Decade:"dec",Institution:"dom"}[e.target.dataset.g];
+    const g={Source:"src",Tier:"tier",Abstract:"tier",Decade:"dec",Institution:"dom"}[e.target.dataset.g];
     const k=+e.target.dataset.k;
     e.target.checked?filters[g].add(k):filters[g].delete(k);
     render();
