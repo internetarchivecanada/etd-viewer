@@ -32,8 +32,9 @@
  main{display:flex;gap:18px}
  #facets{width:225px;min-width:225px;font-size:13px;border-right:1px solid var(--line);padding-right:14px}
  #facets h3{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:14px 0 4px}
- #facets label{display:block;cursor:pointer;padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
- #facets .n{color:var(--mut);float:right}
+ #facets label{display:flex;align-items:baseline;gap:.45em;cursor:pointer;padding:1px 0;min-width:0}
+ #facets label .fl{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+ #facets .n{color:var(--mut)}
  #resultwrap{flex:1;min-width:0}
 </style></head><body>
 <h1>Theses search — impact-index lab</h1>
@@ -313,7 +314,7 @@ function drawFacets(ids){
     const d=y?(((y+1900)/10)|0)*10:0; cs.dec[d]=(cs.dec[d]||0)+1;
   }
   const box=(title,entries,set,label)=>`<h3>${title}</h3>`+entries.map(([k,n])=>
-    `<label><input type="checkbox" data-g="${title}" data-k="${k}" ${set.has(+k)?"checked":""}> ${label(k)} <span class="n">${n.toLocaleString()}</span></label>`).join("");
+    `<label><input type="checkbox" data-g="${title}" data-k="${k}" ${set.has(+k)?"checked":""}><span class="fl">${label(k)}</span><span class="n">${n.toLocaleString()}</span></label>`).join("");
   const hasTiers="tierA" in (FMETA.flag_bits||{});
   let ab=0; for(const i of ids.slice(0,50000)) if(SIDE.getUint8((i-1)*8+1)&128) ab++;
   $("#facets").innerHTML =
@@ -365,7 +366,7 @@ async function run(qstr){
               date:cstr(u8,198,208),dom:cstr(u8,208,232),url:cstr(u8,232,320)};
     }));
     const ms=(performance.now()-t0)|0;
-    const approx=(APPROX||acc.size>=10000||dfmax>acc.size)?"~":"";
+    const approx=(APPROX||acc.size>=10000)?"~":"";
     $("#stat").textContent=`${approx}${Math.max(acc.size,0).toLocaleString()} matches in ${ms}ms · ${nreq} requests · ${(nbytes/1024)|0}KB fetched`;
     $("#results").innerHTML=stubs.map(s=>`<div class="r">
       <a class="t" href="${s.url||"#"}" target="_blank">${esc(s.title)||"(untitled)"}</a>
