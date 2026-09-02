@@ -10,8 +10,8 @@
        3. 320-byte range reads for the ~25 stubs being displayed
      so wall time is ~3 round trips regardless of how common the words are.
      Compare search.html (SQLite FTS5 over ranges): "sea" = 157s, 1,796
-     sequential requests. Facets are omitted in this prototype; the sidecar
-     approach is already proven in the live pages.  -->
+     sequential requests. Facets ride the existing Tier-1 sidecar (8B/doc,
+     ~1MB gz, fetched once at boot); doc ids align by construction.  -->
 <html><head><meta charset="utf-8">
 <title>Theses search — impact index (Pages)</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -29,14 +29,24 @@
  .m{color:var(--mut);font-size:13px;margin-top:2px}
  mark{background:#f3e6c8}
  .err{color:#a33}
+ main{display:flex;gap:18px}
+ #facets{width:225px;min-width:225px;font-size:13px;border-right:1px solid var(--line);padding-right:14px}
+ #facets h3{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:14px 0 4px}
+ #facets label{display:block;cursor:pointer;padding:1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ #facets .n{color:var(--mut);float:right}
+ #resultwrap{flex:1;min-width:0}
 </style></head><body>
 <h1>Theses search — impact-index lab</h1>
 <div class="sub" id="sub">static impact-ordered index; no database engine</div>
 <form id="f"><input id="q" placeholder='terms, or "an exact phrase"' autofocus></form>
-<div class="stat" id="stat"></div><div id="results"></div>
+<div class="stat" id="stat"></div>
+<main><div id="facets"></div><div id="resultwrap"><div id="results"></div></div></main>
 <script>
 const $=s=>document.querySelector(s);
 let META=null, DIR=null, nreq=0, nbytes=0;
+let SIDE=null, FMETA=null, lastRanked=[];
+const filters={src:new Set(),tier:new Set(),dom:new Set(),dec:new Set()};
+const SRC=[["wbm-mine",1],["spn-saved",2],["cdx-already",4],["ia-item",8]];
 
 // ---- must match impact_index.py exactly ----
 const TOKRE=/[0-9a-zà-ɏͰ-῿぀-鿿가-힯]+/gu;
@@ -75,6 +85,17 @@ async function boot(){
   META=await (await fetch("https://archive.org/download/etd-search-lab/index-meta.json?t="+Date.now())).json();
   const d=await (await fetch("https://archive.org/download/etd-search-lab/dict.dir.json")).arrayBuffer();
   DIR=new BigUint64Array(d);
+  // facet sidecar: 8B/doc, ids align with this index's docids (Tier 1).
+  // Served gzip under a .json name (IA grants CORS by extension); datanodes
+  // sometimes set Content-Encoding so the body may arrive pre-inflated.
+  try{
+    FMETA=await (await fetch("https://archive.org/download/etd-search-lab/facets-meta.json")).json();
+    const g=await fetch("https://archive.org/download/etd-search-lab/facets.gz.json");
+    let buf;
+    try{buf=await new Response(g.body.pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();}
+    catch(e){buf=await (await fetch("https://archive.org/download/etd-search-lab/facets.gz.json")).arrayBuffer();}
+    SIDE=new DataView(buf);
+  }catch(e){ console.warn("facets unavailable:",e); }
   $("#sub").textContent=`${META.n_docs.toLocaleString()} documents · built ${META.built} · postings ${(META.postings_bytes/1e6).toFixed(0)}MB static`;
   const q=new URLSearchParams(location.search).get("q");
   if(q){$("#q").value=q; run(q);}
@@ -119,6 +140,39 @@ async function postings(entry){
   return out;
 }
 
+function pass(i){
+  if(!SIDE) return true;
+  const o=(i-1)*8, y=SIDE.getUint8(o), fl=SIDE.getUint8(o+1), dm=SIDE.getUint16(o+2,true);
+  if(filters.src.size && ![...filters.src].some(b=>fl&b)) return false;
+  if(filters.tier.size && ![...filters.tier].some(b=>fl&b)) return false;
+  if(filters.dom.size && !filters.dom.has(dm)) return false;
+  if(filters.dec.size && !filters.dec.has(y?(((y+1900)/10)|0)*10:0)) return false;
+  return true;
+}
+function drawFacets(ids){
+  if(!SIDE){$("#facets").innerHTML="";return;}
+  const cs={src:{},tier:{},dom:{},dec:{}};
+  for(const i of ids.slice(0,50000)){
+    const o=(i-1)*8, y=SIDE.getUint8(o), fl=SIDE.getUint8(o+1), dm=SIDE.getUint16(o+2,true);
+    for(const[,b]of SRC) if(fl&b) cs.src[b]=(cs.src[b]||0)+1;
+    for(const b of[16,32]) if(fl&b) cs.tier[b]=(cs.tier[b]||0)+1;
+    cs.dom[dm]=(cs.dom[dm]||0)+1;
+    const d=y?(((y+1900)/10)|0)*10:0; cs.dec[d]=(cs.dec[d]||0)+1;
+  }
+  const box=(title,entries,set,label)=>`<h3>${title}</h3>`+entries.map(([k,n])=>
+    `<label><input type="checkbox" data-g="${title}" data-k="${k}" ${set.has(+k)?"checked":""}> ${label(k)} <span class="n">${n.toLocaleString()}</span></label>`).join("");
+  $("#facets").innerHTML =
+    box("Source",SRC.map(([nm,b])=>[b,cs.src[b]||0]),filters.src,k=>SRC.find(([,b])=>b==k)[0])+
+    box("Tier",[[16,cs.tier[16]||0],[32,cs.tier[32]||0]],filters.tier,k=>k==16?"A (confirmed)":"B (likely)")+
+    box("Decade",Object.entries(cs.dec).sort((a,b)=>b[0]-a[0]).slice(0,12),filters.dec,k=>k==0?"unknown":k+"s")+
+    box("Institution",Object.entries(cs.dom).sort((a,b)=>b[1]-a[1]).slice(0,15),filters.dom,k=>(FMETA.domains||[])[k-1]||"other");
+  $("#facets").onchange=e=>{
+    const g={Source:"src",Tier:"tier",Decade:"dec",Institution:"dom"}[e.target.dataset.g];
+    const k=+e.target.dataset.k;
+    e.target.checked?filters[g].add(k):filters[g].delete(k);
+    render();
+  };
+}
 const dec=new TextDecoder();
 function cstr(u8,a,b){const s=u8.subarray(a,b);let e=s.indexOf(0);return dec.decode(e<0?s:s.subarray(0,e));}
 
@@ -153,7 +207,8 @@ async function run(qstr){
         if(!sets.every(s=>s.has(d))) acc.delete(d);
     }
     const ids=[...acc.entries()].sort((a,b)=>b[1]-a[1]).slice(0,3000);
-    const top=ids.slice(0,25);
+    lastRanked=ids; drawFacets(ids.map(([d])=>d));
+    const top=ids.filter(([d])=>pass(d)).slice(0,25);
     const stubs=await Promise.all(top.map(async([d])=>{          // phase 3
       const u8=await range("https://archive.org/download/etd-search-lab/stubs.bin.json",(d-1)*META.stub_bytes,META.stub_bytes);
       return {id:d,title:cstr(u8,0,150),creators:cstr(u8,150,198),
@@ -169,6 +224,21 @@ async function run(qstr){
   }catch(e){
     $("#stat").innerHTML=`<span class="err">failed: ${esc(String(e))}</span>`;
   }
+}
+async function render(){
+  const t0=performance.now();
+  const top=lastRanked.filter(([d])=>pass(d)).slice(0,25);
+  const stubs=await Promise.all(top.map(async([d])=>{
+    const u8=await range("https://archive.org/download/etd-search-lab/stubs.bin.json",(d-1)*META.stub_bytes,META.stub_bytes);
+    return {id:d,title:cstr(u8,0,150),creators:cstr(u8,150,198),
+            date:cstr(u8,198,208),dom:cstr(u8,208,232),url:cstr(u8,232,320)};
+  }));
+  const nf=lastRanked.filter(([d])=>pass(d)).length;
+  $("#stat").textContent=`${nf.toLocaleString()} of top ${lastRanked.length.toLocaleString()} pass filters (${(performance.now()-t0)|0}ms, no new search)`;
+  $("#results").innerHTML=stubs.map(s=>`<div class="r">
+    <a class="t" href="${s.url||"#"}" target="_blank">${esc(s.title)||"(untitled)"}</a>
+    <div class="m">${esc(s.creators)}${s.creators&&s.date?" · ":""}${esc(s.date)} · ${esc(s.dom)} · #${s.id}</div></div>`).join("")
+    ||"<p class='m'>No results under these filters.</p>";
 }
 const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 $("#f").addEventListener("submit",e=>{e.preventDefault();
