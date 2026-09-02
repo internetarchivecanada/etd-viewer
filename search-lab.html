@@ -182,8 +182,17 @@ async function run(qstr){
   try{
     const phrases=[...qstr.matchAll(/"([^"]+)"/g)].map(m=>m[1]);
     const rest=qstr.replace(/"[^"]+"/g," ");
+    // CommonGrams: bigram exists only when either word is common; a chain
+    // carries the phrase's unigrams too, and filtering below uses only
+    // COMPLETE posting lists (stored==df) -- a truncated list cannot prove
+    // a doc absent.
+    const commons=new Set(META.commons||[]);
     const chains=phrases.map(p=>{const t=tokens(p);
-      return t.length>1?t.slice(0,-1).map((a,i)=>`${a}_${t[i+1]}`):t;});
+      const ch=[...t];
+      for(let i=0;i<t.length-1;i++)
+        if(!commons.size||commons.has(t[i])||commons.has(t[i+1]))
+          ch.push(`${t[i]}_${t[i+1]}`);
+      return ch;});
     const loose=tokens(rest);
     const all=[...loose,...chains.flat()];
     if(!all.length){$("#stat").textContent="no query terms";return;}
@@ -201,8 +210,12 @@ async function run(qstr){
         acc.set(d,(acc.get(d)||0)+q*idf);
     }
     for(const ch of chains){
-      if(ch.length<2) continue;
-      const sets=ch.map(t=>new Set((lists.get(t)||[]).map(p=>p[0])));
+      const sets=[];
+      for(const t of ch){
+        const e=entries.get(t), pl=lists.get(t);
+        if(e&&pl&&pl.length===e.df) sets.push(new Set(pl.map(p=>p[0])));
+      }
+      if(!sets.length) continue;
       for(const d of [...acc.keys()])
         if(!sets.every(s=>s.has(d))) acc.delete(d);
     }
