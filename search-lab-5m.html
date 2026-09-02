@@ -32,12 +32,11 @@
  main{display:flex;gap:18px}
  #facets{width:225px;min-width:225px;font-size:13px;border-right:1px solid var(--line);padding-right:14px}
  #facets h3{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut);margin:14px 0 4px}
- #facets label{display:flex;align-items:baseline;gap:.45em;cursor:pointer;padding:1px 0;min-width:0}
- /* flex-basis MUST be auto: WebKit refuses to grow a basis-0 item inside a
-    <label> flex container, computing width 0 and clipping the text (Chrome
-    grows it). Found with Playwright-WebKit after two blind CSS attempts. */
- #facets label .fl{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
- #facets .n{margin-left:auto}
+ /* deliberately boring: no flex, no float, no ellipsis. WebKit computed
+    zero/near-zero widths for flexed spans inside <label> two different
+    ways; plain inline flow renders everywhere. Long names wrap. */
+ #facets label{display:block;cursor:pointer;padding:1px 0;overflow-wrap:anywhere}
+ #facets .n{color:var(--mut)}
  #facets .n{color:var(--mut)}
  #resultwrap{flex:1;min-width:0}
 </style></head><body>
@@ -318,7 +317,7 @@ function drawFacets(ids){
     const d=y?(((y+1900)/10)|0)*10:0; cs.dec[d]=(cs.dec[d]||0)+1;
   }
   const box=(title,entries,set,label)=>`<h3>${title}</h3>`+entries.map(([k,n])=>
-    `<label><input type="checkbox" data-g="${title}" data-k="${k}" ${set.has(+k)?"checked":""}><span class="fl">${label(k)}</span><span class="n">${n.toLocaleString()}</span></label>`).join("");
+    `<label><input type="checkbox" data-g="${title}" data-k="${k}" ${set.has(+k)?"checked":""}> ${label(k)} <span class="n">(${n.toLocaleString()})</span></label>`).join("");
   const hasTiers="tierA" in (FMETA.flag_bits||{});
   let ab=0; for(const i of ids.slice(0,50000)) if(SIDE.getUint8((i-1)*8+1)&128) ab++;
   $("#facets").innerHTML =
