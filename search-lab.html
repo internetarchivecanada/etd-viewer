@@ -38,7 +38,7 @@
 </style></head><body>
 <h1>Theses search — impact-index lab</h1>
 <div class="sub" id="sub">static impact-ordered index; no database engine</div>
-<form id="f"><input id="q" placeholder='terms, or "an exact phrase"' autofocus></form>
+<form id="f"><input id="q" placeholder='terms, "a phrase", AND OR NOT (), year:2019, host:mit, has:abstract' autofocus></form>
 <div class="stat" id="stat"></div>
 <main><div id="facets"></div><div id="resultwrap"><div id="results"></div></div></main>
 <script>
@@ -106,6 +106,152 @@ async function boot(){
   $("#sub").textContent=`${META.n_docs.toLocaleString()} documents · built ${META.built} · postings ${(META.postings_bytes/1e6).toFixed(0)}MB static`;
   const q=new URLSearchParams(location.search).get("q");
   if(q){$("#q").value=q; run(q);}
+}
+
+// ---- boolean grammar (same spec as impact_index.py: adjacency=OR,
+// UPPERCASE operators, field:value lifts to global sidecar filters) ----
+const FIELD_RE=/^(year|host|source|has|title|creator|abstract):(.+)$/;
+function qtokens(q){
+  const out=[]; let i=0;
+  while(i<q.length){
+    const ch=q[i];
+    if(/\s/.test(ch)){i++;}
+    else if(ch==="("||ch===")"){out.push(ch);i++;}
+    else if(ch==='"'){let j=q.indexOf('"',i+1); if(j<0)j=q.length;
+      out.push(["PH",q.slice(i+1,j)]); i=j+1;}
+    else{let j=i; while(j<q.length&&!/[\s()"]/.test(q[j]))j++;
+      let w=q.slice(i,j); i=j;
+      if(/^\w+:\[/.test(w)&&!w.includes("]")){
+        const k2=q.indexOf("]",i); if(k2>=0){w+=q.slice(i,k2+1); i=k2+1;}}
+      if(w==="AND"||w==="OR"||w==="NOT")out.push(w);
+      else{const m=FIELD_RE.exec(w);
+        out.push(m?["FLD",m[1],m[2]]:["TM",w]);}}
+  }
+  return out;
+}
+function qparse(toks){
+  const fields=[]; let pos=0;
+  function unit(){
+    while(pos<toks.length){
+      const t=toks[pos];
+      if(t==="NOT"){pos++;
+        const before=fields.length;
+        const u=unit();
+        if(u===null&&fields.length>before){fields[fields.length-1][0]=true;return null;}
+        return ["notu",u];}
+      if(t==="("){pos++; const e=expr();
+        if(pos<toks.length&&toks[pos]===")")pos++;
+        return e;}
+      if(Array.isArray(t)){pos++;
+        if(t[0]==="PH")return ["ph",t[1]];
+        if(t[0]==="FLD"){fields.push([false,t[1],t[2]]);return null;}
+        return ["tm",t[1]];}
+      pos++;
+    }
+    return null;
+  }
+  function expr(){
+    let left=unit();
+    while(pos<toks.length){
+      const t=toks[pos];
+      if(t===")")break;
+      let op="or";
+      if(t==="AND"||t==="OR"){op=t.toLowerCase();pos++;
+        if(pos>=toks.length)break;}
+      let right=unit();
+      if(right===null)continue;
+      if(Array.isArray(right)&&right[0]==="notu"){
+        if(right[1]!==null)
+          left=left!==null?["not",left,right[1]]:["not",["all"],right[1]];
+        continue;}
+      left=left!==null?[op,left,right]:right;
+    }
+    if(Array.isArray(left)&&left[0]==="notu")
+      left=left[1]!==null?["not",null,left[1]]:null;
+    return left;
+  }
+  return [expr(),fields];
+}
+let APPROX=false;
+async function unitMaps(text,kind,entries,lists,commons,N){
+  const toks=tokens(text);
+  let terms=[...toks];
+  if(kind==="ph")
+    for(let i2=0;i2<toks.length-1;i2++)
+      if(!commons.size||commons.has(toks[i2])||commons.has(toks[i2+1]))
+        terms.push(`${toks[i2]}_${toks[i2+1]}`);
+  const acc=new Map(); let complete=true; const sets=[];
+  for(const t of terms){
+    const e=entries.get(t), pl=lists.get(t);
+    if(!e||!pl||!pl.length){complete=false;continue;}
+    if(pl.length<e.df)complete=false;
+    else if(kind==="ph")sets.push(new Set(pl.map(x=>x[0])));
+    const idf=Math.log(1+(N-e.df+0.5)/(e.df+0.5));
+    for(const[d,q2]of pl)acc.set(d,(acc.get(d)||0)+q2*idf);
+  }
+  if(kind==="ph"&&sets.length)
+    for(const d of[...acc.keys()])
+      if(!sets.every(s2=>s2.has(d)))acc.delete(d);
+  return [acc,complete];
+}
+async function evalNode(node,entries,lists,commons,N){
+  if(node===null)return [new Map(),true];
+  const op=node[0];
+  if(op==="tm"||op==="ph")return unitMaps(node[1],op,entries,lists,commons,N);
+  if(op==="all")return [new Map(),false];
+  const [a,ca]=await evalNode(node[1],entries,lists,commons,N);
+  const [b,cb]=await evalNode(node[2],entries,lists,commons,N);
+  if(op==="not"){
+    if(!cb)APPROX=true;
+    for(const d of[...a.keys()])if(b.has(d))a.delete(d);
+    return [a,ca&&cb];}
+  if(op==="and"){
+    if(!(ca&&cb))APPROX=true;
+    const out=new Map();
+    for(const[d,s2]of a)if(b.has(d))out.set(d,s2+b.get(d));
+    return [out,ca&&cb];}
+  for(const[d,s2]of b)a.set(d,(a.get(d)||0)+s2);
+  return [a,ca&&cb];
+}
+function treeTerms(node,commons,out){
+  if(node===null)return out;
+  const op=node[0];
+  if(op==="tm"||op==="ph"){
+    const toks=tokens(node[1]);
+    for(const t of toks)out.push(t);
+    if(op==="ph")
+      for(let i2=0;i2<toks.length-1;i2++)
+        if(!commons.size||commons.has(toks[i2])||commons.has(toks[i2+1]))
+          out.push(`${toks[i2]}_${toks[i2+1]}`);
+    return out;}
+  if(op==="all")return out;
+  if(node[1])treeTerms(node[1],commons,out);
+  if(node[2])treeTerms(node[2],commons,out);
+  return out;
+}
+function fieldPredicates(fields){
+  // -> [fn(docid)->bool] over the sidecar; unsupported text fields reported
+  const preds=[], unsupported=[];
+  for(const[neg,f,v]of fields){
+    let fn=null;
+    if(f==="year"){
+      const m=/^\[(\d{4})\s+TO\s+(\d{4})\]$/.exec(v);
+      const lo=m?+m[1]:+v, hi=m?+m[2]:+v;
+      if(!isNaN(lo))fn=i=>{const y=SIDE.getUint8((i-1)*8);
+        return y>0&&y+1900>=lo&&y+1900<=hi;};
+    }else if(f==="host"){
+      const want=v.toLowerCase(); const ids=new Set();
+      (FMETA?.domains||[]).forEach((d2,k2)=>{if(d2&&d2.toLowerCase().includes(want))ids.add(k2+1);});
+      fn=i=>ids.has(SIDE.getUint16((i-1)*8+2,true));
+    }else if(f==="has"&&v==="abstract"){
+      fn=i=>(SIDE.getUint8((i-1)*8+1)&128)!==0;
+    }else if(f==="source"){
+      const bit=(FMETA?.flag_bits||{})[v];
+      if(bit)fn=i=>(SIDE.getUint8((i-1)*8+1)&bit)!==0;
+    }else{unsupported.push(f+":");continue;}
+    if(fn)preds.push(neg?(i=>!fn(i)):fn);
+  }
+  return [preds,unsupported];
 }
 
 async function lookupTerms(terms){
@@ -191,46 +337,26 @@ async function run(qstr){
   const t0=performance.now(); nreq=0; nbytes=0;
   $("#stat").textContent="searching…"; $("#results").innerHTML="";
   try{
-    const phrases=[...qstr.matchAll(/"([^"]+)"/g)].map(m=>m[1]);
-    const rest=qstr.replace(/"[^"]+"/g," ");
-    // CommonGrams: bigram exists only when either word is common; a chain
-    // carries the phrase's unigrams too, and filtering below uses only
-    // COMPLETE posting lists (stored==df) -- a truncated list cannot prove
-    // a doc absent.
     const commons=new Set(META.commons||[]);
-    const chains=phrases.map(p=>{const t=tokens(p);
-      const ch=[...t];
-      for(let i=0;i<t.length-1;i++)
-        if(!commons.size||commons.has(t[i])||commons.has(t[i+1]))
-          ch.push(`${t[i]}_${t[i+1]}`);
-      return ch;});
-    const loose=tokens(rest);
-    const all=[...loose,...chains.flat()];
-    if(!all.length){$("#stat").textContent="no query terms";return;}
+    const [tree,fields]=qparse(qtokens(qstr));
+    const [fpreds,unsupported]=SIDE?fieldPredicates(fields):[[],[]];
+    if(unsupported.length)
+      $("#stat").textContent=`note: ${unsupported.join(" ")} fielded text search lands with the 13.5M build`;
+    if(fields.length&&!SIDE&&!tree){$("#stat").textContent="field filters need the facet sidecar (not on this index)";return;}
+    const all=treeTerms(tree,commons,[]);
+    if(!all.length&&!fpreds.length){$("#stat").textContent="no query terms";return;}
     const entries=await lookupTerms(all);                       // phase 1
     const lists=new Map();                                      // phase 2
     await Promise.all([...new Set(all)].filter(t=>entries.has(t)).map(
       async t=>lists.set(t,await postings(entries.get(t)))));
-    const N=META.n_docs, acc=new Map();
+    const N=META.n_docs;
+    APPROX=false;
+    let [acc]=await evalNode(tree,entries,lists,commons,N);
+    for(const fn of fpreds)
+      for(const d of[...acc.keys()]) if(!fn(d)) acc.delete(d);
     let dfmax=0;
-    for(const t of new Set(all)){
-      const e=entries.get(t); if(!e) continue;
-      dfmax=Math.max(dfmax,e.df);
-      const idf=Math.log(1+(N-e.df+0.5)/(e.df+0.5));
-      for(const[d,q]of lists.get(t)||[])
-        acc.set(d,(acc.get(d)||0)+q*idf);
-    }
-    for(const ch of chains){
-      const sets=[];
-      for(const t of ch){
-        const e=entries.get(t), pl=lists.get(t);
-        if(e&&pl&&pl.length===e.df) sets.push(new Set(pl.map(p=>p[0])));
-      }
-      if(!sets.length) continue;
-      for(const d of [...acc.keys()])
-        if(!sets.every(s=>s.has(d))) acc.delete(d);
-    }
-    const ids=[...acc.entries()].sort((a,b)=>b[1]-a[1]).slice(0,3000);
+    for(const t of new Set(all)){const e=entries.get(t); if(e)dfmax=Math.max(dfmax,e.df);}
+    const ids=[...acc.entries()].sort((a,b)=>b[1]-a[1]||a[0]-b[0]).slice(0,3000);
     lastRanked=ids; drawFacets(ids.map(([d])=>d));
     const top=ids.filter(([d])=>pass(d)).slice(0,25);
     const stubs=await Promise.all(top.map(async([d])=>{          // phase 3
@@ -239,7 +365,7 @@ async function run(qstr){
               date:cstr(u8,198,208),dom:cstr(u8,208,232),url:cstr(u8,232,320)};
     }));
     const ms=(performance.now()-t0)|0;
-    const approx=acc.size>=10000||dfmax>acc.size?"~":"";
+    const approx=(APPROX||acc.size>=10000||dfmax>acc.size)?"~":"";
     $("#stat").textContent=`${approx}${Math.max(acc.size,0).toLocaleString()} matches in ${ms}ms · ${nreq} requests · ${(nbytes/1024)|0}KB fetched`;
     $("#results").innerHTML=stubs.map(s=>`<div class="r">
       <a class="t" href="${s.url||"#"}" target="_blank">${esc(s.title)||"(untitled)"}</a>
