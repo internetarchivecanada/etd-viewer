@@ -1,0 +1,178 @@
+<!doctype html>
+<!-- Impact-ordered static-index search: the "no database" prototype (#22).
+
+     Everything here is plain fetch() + arithmetic: no SQLite, no WASM, no
+     sync XHR. A query is three PARALLEL phases:
+       1. one small range read per term into dict.bin (bucket located by
+          fnv1a hash via dict.dir, downloaded once at boot)
+       2. one range read per term into postings.bin (impact-ordered,
+          truncated lists; <= ~60KB each)
+       3. 320-byte range reads for the ~25 stubs being displayed
+     so wall time is ~3 round trips regardless of how common the words are.
+     Compare search.html (SQLite FTS5 over ranges): "sea" = 157s, 1,796
+     sequential requests. Facets are omitted in this prototype; the sidecar
+     approach is already proven in the live pages.  -->
+<html><head><meta charset="utf-8">
+<title>Theses search — impact index (Pages)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+ :root{--fg:#1c1d1f;--mut:#767a80;--acc:#8a3318;--bg:#faf9f7;--line:#e4e1db}
+ body{font:16px/1.45 Georgia,serif;color:var(--fg);background:var(--bg);
+      max-width:780px;margin:2rem auto;padding:0 1rem}
+ h1{font-size:22px;margin:0 0 2px}
+ .sub{color:var(--mut);font-size:13px;margin-bottom:14px}
+ input{font:inherit;width:100%;padding:8px 10px;border:1px solid var(--line);
+       border-radius:4px;background:#fff}
+ .stat{color:var(--mut);font-size:13px;margin:10px 0}
+ .r{padding:10px 0;border-top:1px solid var(--line)}
+ .t{color:var(--acc);text-decoration:none;font-weight:bold}
+ .m{color:var(--mut);font-size:13px;margin-top:2px}
+ mark{background:#f3e6c8}
+ .err{color:#a33}
+</style></head><body>
+<h1>Theses search — impact-index lab</h1>
+<div class="sub" id="sub">static impact-ordered index; no database engine</div>
+<form id="f"><input id="q" placeholder='terms, or "an exact phrase"' autofocus></form>
+<div class="stat" id="stat"></div><div id="results"></div>
+<script>
+const $=s=>document.querySelector(s);
+let META=null, DIR=null, nreq=0, nbytes=0;
+
+// ---- must match impact_index.py exactly ----
+const TOKRE=/[0-9a-zà-ɏͰ-῿぀-鿿가-힯]+/gu;
+const CJKRE=/[぀-鿿가-힯]/u;
+function tokens(text){
+  const out=[];
+  for(const m of (text||"").normalize("NFC").toLowerCase().matchAll(TOKRE)){
+    const t=m[0];
+    if(t.length>2 && CJKRE.test(t)){
+      for(let i=0;i<t.length-1;i++) out.push(t.slice(i,i+2));
+    } else out.push(t);
+  }
+  return out;
+}
+function fnv1a(term){
+  let h=0x811c9dc5;
+  for(const b of new TextEncoder().encode(term)){
+    h^=b; h=Math.imul(h,0x01000193)>>>0;
+  }
+  return h>>>0;
+}
+function rvarint(u8,i){
+  let n=0,s=0;
+  for(;;){const b=u8[i++]; n+=(b&0x7f)*2**s; if(!(b&0x80))return [n,i]; s+=7;}
+}
+async function range(file,off,len){
+  nreq++;
+  const r=await fetch(file,{headers:{Range:`bytes=${off}-${off+len-1}`}});
+  if(!(r.status===206||r.status===200)) throw new Error(`${file}: HTTP ${r.status}`);
+  const buf=new Uint8Array(await r.arrayBuffer());
+  nbytes+=buf.length;
+  return buf.length>len?buf.slice(0,len):buf;   // 200 fallback safety
+}
+
+async function boot(){
+  META=await (await fetch("https://archive.org/download/etd-search-lab/index-meta.json?t="+Date.now())).json();
+  const d=await (await fetch("https://archive.org/download/etd-search-lab/dict.dir.json")).arrayBuffer();
+  DIR=new BigUint64Array(d);
+  $("#sub").textContent=`${META.n_docs.toLocaleString()} documents · built ${META.built} · postings ${(META.postings_bytes/1e6).toFixed(0)}MB static`;
+  const q=new URLSearchParams(location.search).get("q");
+  if(q){$("#q").value=q; run(q);}
+}
+
+async function lookupTerms(terms){
+  // phase 1: all dict buckets in parallel (dedup same-bucket fetches)
+  const uniq=[...new Set(terms)];
+  const byBucket=new Map();
+  for(const t of uniq){
+    const b=fnv1a(t)&0xffff;
+    if(!byBucket.has(b)) byBucket.set(b,[]);
+    byBucket.get(b).push(t);
+  }
+  const entries=new Map();
+  await Promise.all([...byBucket.entries()].map(async([b,ts])=>{
+    const off=Number(DIR[b]), end=Number(DIR[b+1]);
+    if(end<=off){return;}
+    const u8=await range("https://archive.org/download/etd-search-lab/dict.bin.json",off,end-off);
+    const want=new Map(ts.map(t=>[t,new TextEncoder().encode(t)]));
+    let i=0;
+    while(i<u8.length){
+      let tl;[tl,i]=rvarint(u8,i);
+      const tb=u8.subarray(i,i+tl); i+=tl;
+      let o,ln,df;[o,i]=rvarint(u8,i);[ln,i]=rvarint(u8,i);[df,i]=rvarint(u8,i);
+      for(const[t,w]of want)
+        if(w.length===tl&&w.every((x,k)=>x===tb[k])) entries.set(t,{o,ln,df});
+    }
+  }));
+  return entries;
+}
+
+async function postings(entry){
+  const u8=await range("https://archive.org/download/etd-search-lab/postings.bin.json",entry.o,entry.ln);
+  let i=0,df,ns;[df,i]=rvarint(u8,i);[ns,i]=rvarint(u8,i);
+  const out=[];
+  while(out.length<ns){
+    const q=u8[i++]; let cnt;[cnt,i]=rvarint(u8,i);
+    let d=0;
+    for(let k=0;k<cnt;k++){let dd;[dd,i]=rvarint(u8,i); d+=dd; out.push([d,q]);}
+  }
+  return out;
+}
+
+const dec=new TextDecoder();
+function cstr(u8,a,b){const s=u8.subarray(a,b);let e=s.indexOf(0);return dec.decode(e<0?s:s.subarray(0,e));}
+
+async function run(qstr){
+  const t0=performance.now(); nreq=0; nbytes=0;
+  $("#stat").textContent="searching…"; $("#results").innerHTML="";
+  try{
+    const phrases=[...qstr.matchAll(/"([^"]+)"/g)].map(m=>m[1]);
+    const rest=qstr.replace(/"[^"]+"/g," ");
+    const chains=phrases.map(p=>{const t=tokens(p);
+      return t.length>1?t.slice(0,-1).map((a,i)=>`${a}_${t[i+1]}`):t;});
+    const loose=tokens(rest);
+    const all=[...loose,...chains.flat()];
+    if(!all.length){$("#stat").textContent="no query terms";return;}
+    const entries=await lookupTerms(all);                       // phase 1
+    const lists=new Map();                                      // phase 2
+    await Promise.all([...new Set(all)].filter(t=>entries.has(t)).map(
+      async t=>lists.set(t,await postings(entries.get(t)))));
+    const N=META.n_docs, acc=new Map();
+    let dfmax=0;
+    for(const t of new Set(all)){
+      const e=entries.get(t); if(!e) continue;
+      dfmax=Math.max(dfmax,e.df);
+      const idf=Math.log(1+(N-e.df+0.5)/(e.df+0.5));
+      for(const[d,q]of lists.get(t)||[])
+        acc.set(d,(acc.get(d)||0)+q*idf);
+    }
+    for(const ch of chains){
+      if(ch.length<2) continue;
+      const sets=ch.map(t=>new Set((lists.get(t)||[]).map(p=>p[0])));
+      for(const d of [...acc.keys()])
+        if(!sets.every(s=>s.has(d))) acc.delete(d);
+    }
+    const ids=[...acc.entries()].sort((a,b)=>b[1]-a[1]).slice(0,3000);
+    const top=ids.slice(0,25);
+    const stubs=await Promise.all(top.map(async([d])=>{          // phase 3
+      const u8=await range("https://archive.org/download/etd-search-lab/stubs.bin.json",(d-1)*META.stub_bytes,META.stub_bytes);
+      return {id:d,title:cstr(u8,0,150),creators:cstr(u8,150,198),
+              date:cstr(u8,198,208),dom:cstr(u8,208,232),url:cstr(u8,232,320)};
+    }));
+    const ms=(performance.now()-t0)|0;
+    const approx=acc.size>=10000||dfmax>acc.size?"~":"";
+    $("#stat").textContent=`${approx}${Math.max(acc.size,0).toLocaleString()} matches in ${ms}ms · ${nreq} requests · ${(nbytes/1024)|0}KB fetched`;
+    $("#results").innerHTML=stubs.map(s=>`<div class="r">
+      <a class="t" href="${s.url||"#"}" target="_blank">${esc(s.title)||"(untitled)"}</a>
+      <div class="m">${esc(s.creators)}${s.creators&&s.date?" · ":""}${esc(s.date)} · ${esc(s.dom)} · #${s.id}</div></div>`).join("")
+      ||"<p class='m'>No results.</p>";
+  }catch(e){
+    $("#stat").innerHTML=`<span class="err">failed: ${esc(String(e))}</span>`;
+  }
+}
+const esc=s=>(s||"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+$("#f").addEventListener("submit",e=>{e.preventDefault();
+  const q=$("#q").value.trim();
+  history.replaceState(null,"","?q="+encodeURIComponent(q)); run(q);});
+boot();
+</script></body></html>
